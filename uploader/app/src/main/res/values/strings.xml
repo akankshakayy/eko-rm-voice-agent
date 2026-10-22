@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sahayak Recorder Sync</string>
+    <string name="step_server">1. Sahayak server</string>
+    <string name="token_hint">Upload token from the Sahayak admin</string>
+    <string name="test_connection">Test connection</string>
+    <string name="step_sim">2. Eko SIM</string>
+    <string name="sim_hint">Only calls made or received on this SIM are uploaded. Recordings of calls on any other SIM stay on the phone.</string>
+    <string name="step_folder">3. Call recordings folder</string>
+    <string name="pick_folder">Choose folder</string>
+    <string name="folder_hint">Where the dialer saves call recordings. Usually:\n• Google Phone: Recordings › Call recordings (or Download/Call recordings)\n• Xiaomi / Redmi / Poco: MIUI › sound_recorder › call_rec\n• Samsung: Recordings › Call\n• OnePlus / Realme / Oppo: Music › Recordings › Call Recordings</string>
+    <string name="step_schedule">4. Daily upload</string>
+    <string name="wifi_only">Upload on Wi-Fi only</string>
+    <string name="save">Save and start daily upload (8 pm)</string>
+    <string name="upload_now">Upload now</string>
+    <string name="status">Status</string>
+</resources>

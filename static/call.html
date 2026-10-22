@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call Console · Eko Sahayak</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+  .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+  @media (max-width: 1150px) { .layout { grid-template-columns: 1fr; } }
+  .setup label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin: 12px 0 5px; }
+  .setup select { width: 100%; }
+  .toggle { display: flex !important; gap: 10px; align-items: center; margin: 10px 0 0 !important; color: var(--text) !important;
+    font-size: 13.5px !important; font-weight: 500 !important; cursor: pointer; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+  .engine-note { margin-top: 16px; padding: 12px 14px; border-radius: var(--radius-sm); font-size: 12.5px; line-height: 1.55;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--panel)), color-mix(in srgb, var(--accent-2) 8%, var(--panel)));
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); }
+  .setup { --tone: var(--c1); }
+
+  /* conversation column */
+  .stage { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+  .call-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 18px; font-weight: 600;
+    border-bottom: 1px solid var(--border); background: var(--panel); }
+  .call-status:has(.live-dot) { background: linear-gradient(90deg, var(--ok-soft), var(--panel) 70%); }
+  .call-status .timer { margin-left: auto; font: 500 13px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  #transcript { height: 52vh; min-height: 320px; overflow-y: auto; display: flex; flex-direction: column; padding: 16px 18px;
+    background: radial-gradient(520px 260px at 50% 0, color-mix(in srgb, var(--sun) 16%, transparent), transparent 70%),
+      radial-gradient(420px 300px at 100% 100%, color-mix(in srgb, var(--accent-2) 8%, transparent), transparent 70%),
+      radial-gradient(420px 300px at 0 100%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%), var(--panel);
+    scroll-behavior: smooth; }
+  #transcript .empty { margin: auto; max-width: 360px; }
+  .empty-hero { display: grid; justify-items: center; gap: 10px; }
+  .empty-hero .sun { width: 56px; height: 56px; }
+  .bubble.agent::before { content: "Sahayak"; display: block; font: 700 10.5px/1 var(--font-body); letter-spacing: .07em; text-transform: uppercase;
+    color: var(--sun-ink); margin-bottom: 5px; }
+  .bubble.thinking { display: inline-flex; gap: 5px; padding: 14px 16px; width: auto; }
+  .bubble.thinking::before { display: none; }
+  .bubble.thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: bounce 1.1s infinite ease-in-out; }
+  .bubble.thinking i:nth-child(2) { animation-delay: .15s; } .bubble.thinking i:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce { 0%, 80%, 100% { transform: translateY(0); opacity: .45 } 40% { transform: translateY(-5px); opacity: 1 } }
+
+  .controls { border-top: 1px solid var(--border); padding: 14px 18px 18px; display: grid; gap: 12px; background: var(--panel); }
+  .voice-state { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 22px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .voice-state > span { display: none; align-items: center; gap: 8px; }
+  .voice-state .idle { display: inline-flex; }
+  body.agent-speaking .voice-state .idle, body.agent-thinking .voice-state .idle, body:has(#micBtn.listening) .voice-state .idle { display: none; }
+  body.agent-speaking .voice-state .speaking { display: inline-flex; color: var(--sun-ink); }
+  body.agent-thinking:not(.agent-speaking) .voice-state .thinking { display: inline-flex; }
+  body:has(#micBtn.listening):not(.agent-speaking) .voice-state .listening { display: inline-flex; color: var(--bad); }
+  .eq { display: inline-flex; align-items: flex-end; gap: 3px; height: 16px; }
+  .eq i { width: 3px; border-radius: 2px; background: currentColor; animation: eq .9s infinite ease-in-out; }
+  .eq i:nth-child(1) { animation-delay: -.2s } .eq i:nth-child(2) { animation-delay: -.5s } .eq i:nth-child(3) { animation-delay: -.1s } .eq i:nth-child(4) { animation-delay: -.7s }
+  @keyframes eq { 0%, 100% { height: 4px } 50% { height: 16px } }
+
+  .mic-wrap { display: grid; place-items: center; }
+  .mic { --level: 0; position: relative; width: 76px; height: 76px; border-radius: 50%; padding: 0; display: grid; place-items: center;
+    background: var(--grad-sun); color: #3d2200; border: 0; box-shadow: 0 0 0 6px color-mix(in srgb, var(--sun) 16%, transparent), 0 12px 26px -10px var(--sun-2); }
+  .mic svg { width: 30px; height: 30px; }
+  .mic:hover:not(:disabled) { filter: brightness(1.05); box-shadow: 0 0 0 9px color-mix(in srgb, var(--sun) 20%, transparent), 0 14px 30px -10px var(--sun-2); }
+  .mic:disabled { background: var(--panel-2); color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); opacity: 1; }
+  .mic::before, .mic::after { content: ""; position: absolute; inset: 0; border-radius: 50%; pointer-events: none; }
+  .mic.listening { background: linear-gradient(135deg, #ff6b6b, #e0315a); color: #fff; animation: none; }
+  .mic.listening::before { box-shadow: 0 0 0 calc(6px + var(--level) * 70px) color-mix(in srgb, var(--bad) 18%, transparent); transition: box-shadow .1s linear; }
+  .mic.listening::after { border: 2px solid var(--bad); animation: ripple 1.6s var(--ease) infinite; }
+  @keyframes ripple { from { transform: scale(1); opacity: .6 } to { transform: scale(1.7); opacity: 0 } }
+  #interim { min-height: 20px; font-style: italic; color: var(--muted); text-align: center; font-size: 13px; }
+  .composer { display: flex; gap: 8px; }
+  .composer input { flex: 1; min-width: 0; border-radius: 999px; padding: 10px 16px; }
+  .composer button { border-radius: 999px; padding: 9px 18px; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+  .quick button { --tone: var(--c8); display: inline-flex; align-items: center; gap: 6px; background: color-mix(in srgb, var(--tone) 8%, var(--panel));
+    color: var(--text); border: 1px solid color-mix(in srgb, var(--tone) 28%, var(--border)); border-radius: 999px; padding: 5px 12px;
+    font-size: 12.5px; font-weight: 600; box-shadow: none; }
+  .quick button::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--tone); }
+  .quick button:hover:not(:disabled) { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 16%, var(--panel)); box-shadow: none; filter: none; }
+
+  /* understanding column */
+  #statePanel { --tone: var(--c5); }
+  .state-block { --tone: var(--c1); position: relative; margin-bottom: 10px; padding: 12px 14px 12px 16px; border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--tone) 6%, var(--panel)); border: 1px solid color-mix(in srgb, var(--tone) 16%, var(--border)); overflow: hidden; }
+  .state-block::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--tone); }
+  .state-block:nth-of-type(2) { --tone: var(--c5); } .state-block:nth-of-type(3) { --tone: var(--c6); }
+  .state-block:nth-of-type(4) { --tone: var(--c3); } .state-block:nth-of-type(5) { --tone: var(--c2); }
+  .state-block:last-child { margin-bottom: 0; }
+  .state-block h3 { margin-bottom: 6px; }
+  .conf { height: 7px; background: color-mix(in srgb, var(--tone) 14%, var(--panel-2)); border-radius: 99px; overflow: hidden; margin: 8px 0 4px; }
+  .conf i { display: block; height: 100%; background: linear-gradient(90deg, var(--c1), var(--c5), var(--c9)); border-radius: 99px; transition: width .5s var(--ease); }
+  #statePanel dl.kv { grid-template-columns: 110px 1fr; }
+</style>
+</head>
+<body>
+<header class="top" id="nav"></header>
+<main>
+  <div class="layout">
+    <section class="panel setup">
+      <h2>Call setup</h2>
+      <label>Direction</label>
+      <select id="direction"><option value="inbound">Inbound (CSP calls agent)</option><option value="outbound">Outbound (agent calls CSP)</option></select>
+      <label>Caller / CSP (simulated caller ID)</label>
+      <select id="csp"></select>
+      <label>Purpose</label>
+      <select id="purpose"><option value="support">Support</option><option value="follow_up">Ticket follow-up</option><option value="activation">Activation check-in</option></select>
+      <label>Caller's language</label>
+      <select id="lang"><option value="ask">Caller chooses (agent asks: Hindi or English?)</option><option value="hi">Hindi</option><option value="en">English</option></select>
+      <label class="toggle" style="margin-top:16px !important"><input type="checkbox" id="speak" checked> Agent speaks replies aloud</label>
+      <label class="toggle"><input type="checkbox" id="handsfree" checked> Hands-free (listens again after the agent speaks)</label>
+      <div class="row" style="margin-top:14px">
+        <button id="startBtn">Start call</button>
+        <button id="hangBtn" class="danger" disabled>Hang up</button>
+      </div>
+      <div class="engine-note"><div id="engineInfo"></div>
+        <div class="muted" style="margin-top:6px">The agent's voice is generated on the server. With a Groq key the mic works in any browser; otherwise it needs Chrome or Edge. You can also type.</div></div>
+    </section>
+
+    <section class="panel stage">
+      <div class="call-status" id="callStatus"><span class="muted">No active call</span></div>
+      <div id="transcript"><div class="empty"><div class="empty-hero">
+        <svg class="sun" viewBox="0 0 64 64" aria-hidden="true"><g fill="var(--sun)"><path d="M14 40a18 18 0 0 0 36 0h-7a11 11 0 0 1-22 0z"/><g opacity=".85"><rect x="30" y="6" width="4" height="12" rx="2"/><rect x="30" y="6" width="4" height="12" rx="2" transform="rotate(-35 32 34)"/><rect x="30" y="6" width="4" height="12" rx="2" transform="rotate(35 32 34)"/><rect x="30" y="6" width="4" height="12" rx="2" transform="rotate(-68 32 34)"/><rect x="30" y="6" width="4" height="12" rx="2" transform="rotate(68 32 34)"/></g></g></svg>
+        <b style="color:var(--text)">Start a call to talk to Sahayak</b>
+        <span>Speak or type as the CSP. Try “Mera DMT transfer fail ho gaya”.</span></div></div></div>
+      <div class="controls">
+        <div class="voice-state" aria-live="polite">
+          <span class="idle">Tap the mic and speak, or type below</span>
+          <span class="speaking"><span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Sahayak is speaking</span>
+          <span class="thinking">Sahayak is thinking…</span>
+          <span class="listening"><span class="live-dot" style="background:var(--bad)"></span>Listening</span>
+        </div>
+        <div class="mic-wrap"><button class="mic" id="micBtn" disabled title="Tap to speak" aria-label="Tap to speak">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5M8.5 21.5h7"/></svg>
+        </button></div>
+        <div id="interim"></div>
+        <div class="composer">
+          <input type="text" id="textIn" placeholder="Type what the CSP says and press Enter" disabled>
+          <button id="sendBtn" disabled>Send</button>
+        </div>
+        <div class="quick" id="quick" aria-label="Sample phrases">
+          <button type="button" style="--tone:var(--c1)" disabled data-say="Mera DMT transfer fail ho gaya, 5000 rupaye kat gaye">DMT failed</button>
+          <button type="button" style="--tone:var(--c5)" disabled data-say="AePS se customer ka paisa kat gaya lekin cash nahi nikla">AePS issue</button>
+          <button type="button" style="--tone:var(--c6)" disabled data-say="My wallet top-up of 10000 by NEFT is not credited yet">Wallet top-up</button>
+          <button type="button" style="--tone:var(--c2)" disabled data-say="Meri pichli complaint ka kya hua?">Ticket status</button>
+          <button type="button" style="--tone:var(--c3)" disabled data-say="Mujhe mere RM se baat karni hai">Ask for RM</button>
+          <button type="button" style="--tone:var(--c9)" disabled data-say="English please">Switch to English</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="statePanel">
+      <h2>What the agent understood</h2>
+      <div class="empty">No call yet</div>
+    </section>
+  </div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+document.getElementById("nav").innerHTML = navHtml("/call");
+let callId = null, recog = null, listening = false, cfg = null;
+let callLang = "hi";  // the call's current language: ask | hi | en (the caller can switch mid-call)
+const ttsLang = () => callLang === "en" ? "en-IN" : "hi-IN";
+const sttLang = () => callLang === "ask" ? "auto" : ttsLang();
+const LANG_NAME = { ask: "choosing…", hi: "Hindi", en: "English" };
+let micStream = null, analyser = null, rec = null;  // server speech-to-text (Groq Whisper)
+let callTimer = null;
+const setCallUi = on => {
+  ["micBtn", "textIn", "sendBtn", "hangBtn"].forEach(id => $(id).disabled = !on);
+  document.querySelectorAll("#quick button").forEach(b => b.disabled = !on);
+};
+const $ = id => document.getElementById(id);
+
+(async () => {
+  cfg = await loadConfig();
+  $("engineInfo").innerHTML = `Brain: <b>${cfg.engine !== "rules" ? esc(cfg.engine_label) + " (" + esc(cfg.model) + ")" : "Rules fallback (no API key)"}</b>`
+    + `<br>Mic: <b>${cfg.stt ? "Groq Whisper (any browser)" : "browser speech recognition (Chrome / Edge)"}</b>`;
+  const csps = await api("/api/csps");
+  $("csp").innerHTML = csps.map(c => `<option value="${c.phone}">${esc(c.name)} · ${c.csp_code} · ${esc(c.district)} (RM ${esc(c.rm_name.split(" ")[0])})</option>`).join("")
+    + `<option value="9999999999">Unknown number (agent asks for CSP ID)</option>`;
+})();
+
+function addBubble(role, text, meta = "") {
+  const t = $("transcript");
+  if (t.querySelector(".empty")) t.innerHTML = "";
+  const d = document.createElement("div");
+  d.className = `bubble ${role}`;
+  d.innerHTML = `${esc(text)}${meta ? `<div class="meta">${meta}</div>` : ""}`;
+  t.appendChild(d); t.scrollTop = t.scrollHeight;
+}
+
+function renderState(c) {
+  const conf = c.intent_confidence ?? 0;
+  const slots = Object.entries(c.slots || {});
+  $("statePanel").innerHTML = `<h2>What the agent understood</h2>
+    <div class="state-block"><h3>Caller</h3>${c.csp_name ? `${esc(c.csp_name)} <span class="muted">${c.csp_code}</span><br><span class="small muted">${esc(c.shop_name || "")} · RM ${esc(c.rm_name || "–")}</span>` : '<span class="badge b-warn">Unidentified</span>'}</div>
+    <div class="state-block"><h3>Intent</h3>${catChip(c.intent)}
+      <div class="conf"><i style="width:${Math.round(conf * 100)}%"></i></div><span class="small muted">confidence ${Math.round(conf * 100)}%</span></div>
+    <div class="state-block"><h3>Details collected</h3>${slots.length ? `<dl class="kv">${slots.map(([k, v]) => `<dt>${esc(CONFIG.slot_labels[k] || k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : '<span class="muted small">None yet</span>'}</div>
+    <div class="state-block"><h3>Signals</h3><span class="small">Turns: ${c.turn_count} · Not understood: ${c.misunderstood_total} · Sentiment: ${esc(c.sentiment || "–")} · Language: ${esc(LANG_NAME[c.lang] || c.lang || "–")}</span></div>
+    <div class="state-block"><h3>Outcome</h3>${c.status === "ongoing" ? '<span class="badge b-info">In progress</span>' : badge(OUTCOME, c.outcome)}
+      ${c.ticket_no ? `<div style="margin-top:8px">Ticket <b class="mono">${c.ticket_no}</b> ${badge(STATUS, c.ticket_status)}</div>` : ""}
+      ${c.escalation_reason ? `<div class="small muted" style="margin-top:6px">${esc(c.escalation_reason)}</div>` : ""}</div>`;
+}
+
+let audioEl = null;
+function stopSpeaking() {
+  if (audioEl) { audioEl.pause(); audioEl.onended?.(); audioEl = null; }
+  window.speechSynthesis?.cancel();
+}
+
+function browserSpeak(text) {
+  return new Promise(res => {
+    if (!window.speechSynthesis) return res();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = ttsLang();
+    const voices = speechSynthesis.getVoices();
+    const v = voices.find(v => v.lang === u.lang) || voices.find(v => v.lang.startsWith(u.lang.slice(0, 2)));
+    if (v) u.voice = v;
+    u.rate = 1.0; u.onend = res; u.onerror = res;
+    speechSynthesis.speak(u);
+  });
+}
+
+// Neural voice from the server (/api/tts); falls back to the browser's own voice if that fails.
+async function speak(text) {
+  if (!$("speak").checked || !text) return;
+  stopSpeaking();
+  document.body.classList.add("agent-speaking");
+  try {
+    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, lang: ttsLang() }) });
+    if (!r.ok) throw new Error("tts " + r.status);
+    const url = URL.createObjectURL(await r.blob());
+    await new Promise(res => {
+      const a = audioEl = new Audio(url);
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); res(); };
+      a.play().catch(res);
+    });
+  } catch (e) {
+    console.warn("Server TTS failed, using browser voice:", e);
+    await browserSpeak(text);
+  } finally {
+    document.body.classList.remove("agent-speaking");
+  }
+}
+
+async function agentSays(res) {
+  if (res.call?.lang) callLang = res.call.lang;
+  addBubble("agent", res.reply);
+  renderState(res.call);
+  if (res.ended) endUi(res.call);
+  await speak(res.reply);
+  if (!res.ended && $("handsfree").checked && (recog || micStream)) listen();
+}
+
+function endUi(c) {
+  $("callStatus").innerHTML = `<span>Call ended</span> ${badge(OUTCOME, c.outcome)}<span class="timer">${fmtDur(c.duration_sec)}</span>`;
+  clearInterval(callTimer);
+  callId = null; stopListen();
+  setCallUi(false);
+  $("startBtn").disabled = false;
+}
+
+$("startBtn").onclick = async () => {
+  $("transcript").innerHTML = "";
+  const res = await api("/api/calls", { method: "POST", body: { direction: $("direction").value, phone: $("csp").value, purpose: $("purpose").value, lang: $("lang").value } });
+  callId = res.call_id;
+  $("callStatus").innerHTML = `<span class="live-dot"></span> Live call #${callId} <span class="badge">${$("direction").value}</span><span class="timer" id="callTimer">0:00</span>`;
+  const started = Date.now();
+  clearInterval(callTimer);
+  callTimer = setInterval(() => { const s = Math.round((Date.now() - started) / 1000), t = $("callTimer"); if (t) t.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }, 1000);
+  setCallUi(true);
+  $("startBtn").disabled = true;
+  await initMic();
+  await agentSays(res);
+};
+
+$("hangBtn").onclick = async () => {
+  if (!callId) return;
+  stopSpeaking();
+  const c = await api(`/api/calls/${callId}/hangup`, { method: "POST" });
+  renderState(c); addBubble("agent", "— CSP hung up —"); endUi(c);
+};
+
+async function sendText(text, conf = null, via = "typed") {
+  if (!callId || !text.trim()) return;
+  addBubble("csp", text, conf != null ? `speech confidence ${Math.round(conf * 100)}%` : via);
+  const t0 = performance.now();
+  const dots = document.createElement("div");
+  dots.className = "bubble agent thinking"; dots.innerHTML = "<i></i><i></i><i></i>";
+  $("transcript").appendChild(dots); $("transcript").scrollTop = $("transcript").scrollHeight;
+  document.body.classList.add("agent-thinking");
+  let res;
+  try { res = await api(`/api/calls/${callId}/turn`, { method: "POST", body: { text, stt_confidence: conf } }); }
+  finally { dots.remove(); document.body.classList.remove("agent-thinking"); }
+  const ms = Math.round(performance.now() - t0);
+  await agentSays(res);
+  const last = [...document.querySelectorAll(".bubble.agent")].pop();
+  if (last) last.insertAdjacentHTML("beforeend", `<div class="meta">response ${ms} ms</div>`);
+}
+$("sendBtn").onclick = () => { sendText($("textIn").value); $("textIn").value = ""; };
+$("textIn").onkeydown = e => { if (e.key === "Enter") $("sendBtn").click(); };
+
+function initRecog() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { $("micBtn").title = "Speech recognition not supported in this browser - type instead"; $("micBtn").disabled = true; return; }
+  recog = new SR();
+  recog.lang = ttsLang(); recog.interimResults = true; recog.continuous = false; recog.maxAlternatives = 1;
+  recog.onresult = e => {
+    const r = e.results[e.results.length - 1];
+    $("interim").textContent = r[0].transcript;
+    if (r.isFinal) {
+      $("interim").textContent = "";
+      const conf = r[0].confidence > 0 ? r[0].confidence : null;  // some browsers report 0 = unknown
+      stopListen(); sendText(r[0].transcript, conf);
+    }
+  };
+  recog.onend = () => { listening = false; $("micBtn").classList.remove("listening"); };
+  recog.onerror = e => { listening = false; $("micBtn").classList.remove("listening"); if (e.error !== "no-speech" && e.error !== "aborted") $("interim").textContent = "Mic error: " + e.error; };
+}
+async function initMic() {
+  if (cfg?.stt && navigator.mediaDevices?.getUserMedia && window.MediaRecorder) {
+    try {
+      if (!micStream) {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        const ctx = new AudioContext();
+        analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+        ctx.createMediaStreamSource(micStream).connect(analyser);
+      }
+      $("micBtn").disabled = false; $("micBtn").title = "Tap to speak";
+      return;
+    } catch (e) { $("interim").textContent = "Mic blocked: " + e.message + " - allow the microphone or type instead"; }
+  }
+  initRecog();
+}
+
+// Records until ~1.2 s of silence after speech, then sends the clip to /api/stt.
+function listenServer() {
+  if (listening || !callId || !micStream) return;
+  listening = true; $("micBtn").classList.add("listening"); $("interim").textContent = "Listening…";
+  const chunks = [], buf = new Uint8Array(analyser.fftSize), t0 = performance.now();
+  let heard = false, lastLoud = t0;
+  rec = new MediaRecorder(micStream);
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  const timer = setInterval(() => {
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0; for (const v of buf) sum += ((v - 128) / 128) ** 2;
+    const now = performance.now();
+    const rms = Math.sqrt(sum / buf.length);
+    $("micBtn").style.setProperty("--level", Math.min(1, rms * 4).toFixed(3));
+    if (rms > 0.03) { heard = true; lastLoud = now; $("interim").textContent = "Listening… (hearing you)"; }
+    if ((heard && now - lastLoud > 1200) || now - t0 > 20000 || (!heard && now - t0 > 8000)) stopListen();
+  }, 100);
+  rec.onstop = async () => {
+    clearInterval(timer);
+    listening = false; $("micBtn").classList.remove("listening");
+    if (!heard || !callId) { $("interim").textContent = heard ? "" : "Didn't hear anything - tap 🎙 to try again"; return; }
+    $("interim").textContent = "Transcribing…";
+    const fd = new FormData();
+    fd.append("audio", new Blob(chunks, { type: rec.mimeType }), "speech.webm");
+    fd.append("lang", sttLang());
+    try {
+      const r = await fetch("/api/stt", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || r.status);
+      $("interim").textContent = "";
+      if (j.text) sendText(j.text, null, "voice · Whisper");
+      else $("interim").textContent = "Couldn't make that out - tap 🎙 to try again";
+    } catch (e) { $("interim").textContent = "Speech-to-text error: " + e.message; }
+  };
+  rec.start();
+}
+
+function listen() {
+  if (micStream) return listenServer();
+  if (!recog || listening || !callId) return;
+  try { recog.lang = ttsLang(); recog.start(); listening = true; $("micBtn").classList.add("listening"); } catch (e) {}
+}
+function stopListen() {
+  if (rec && rec.state === "recording") { rec.stop(); return; }
+  if (recog && listening) { try { recog.stop(); } catch (e) {} }
+  listening = false; $("micBtn").classList.remove("listening");
+}
+// Closing or reloading the tab hangs up, so abandoned calls don't stay "ongoing"
+addEventListener("pagehide", () => { if (callId) navigator.sendBeacon(`/api/calls/${callId}/hangup`); });
+$("micBtn").onclick = () => listening ? stopListen() : (stopSpeaking(), listen());
+$("quick").onclick = e => { const b = e.target.closest("button[data-say]"); if (b && !b.disabled && callId) { stopSpeaking(); stopListen(); sendText(b.dataset.say, null, "sample phrase"); } };
+window.speechSynthesis?.getVoices();
+</script>
+</body>
+</html>

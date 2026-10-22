@@ -1,0 +1,24 @@
+id,lang,audio,reference_text,expected_intent,expected_action,amount,txn_id,utr_or_ref,bank_name,payment_mode,month,product,notes
+dmt_hinglish,hi,,"Namaste, mera DMT transfer fail ho gaya, 5000 rupaye kat gaye customer ke",dmt_failed,continue,5000,,,,,,,
+dmt_devanagari,hi,,"मेरा मनी ट्रांसफर फेल हो गया, 2500 रुपये कट गए लेकिन बेनिफिशियरी को नहीं मिले",dmt_failed,continue,2500,,,,,,,
+dmt_english,en,,My money transfer of 12000 rupees is still pending since yesterday,dmt_failed,continue,12000,,,,,,,
+dmt_txn_id,hi,,Transaction ID TXN482913577 wala transfer abhi tak pending hai,dmt_failed,continue,,TXN482913577,,,,,,
+aeps_hinglish,hi,,"AePS se customer ka 3000 rupaye kat gaya lekin cash nahi nikla, SBI ka account hai",aeps_issue,continue,3000,,,SBI,,,,
+aeps_devanagari,hi,,"आधार से पैसे निकालते समय अंगूठा नहीं लग रहा, बायोमेट्रिक एरर आ रहा है",aeps_issue,continue,,,,,,,,could also be read as app_device
+wallet_hinglish,hi,,"Maine 25000 ka wallet load kiya tha UPI se, abhi tak balance nahi aaya",wallet_topup,continue,25000,,,,UPI,,,
+wallet_english,en,,"I deposited 10000 by NEFT for wallet top up, UTR 412398765432, not credited yet",wallet_topup,continue,10000,,412398765432,,NEFT,,,
+commission_hinglish,hi,,Pichle mahine ka DMT ka commission nahi aaya abhi tak,commission,,,,,,,last month,DMT,
+commission_english,en,,My AePS commission for September is less than expected,commission,,,,,,,September,AePS,
+kyc_hinglish,hi,,"Mera KYC teen din se pending dikha raha hai, account activate nahi hua",kyc_onboarding,,,,,,,,,
+app_login,hi,,"App mein login nahi ho raha, OTP hi nahi aa raha",app_device,continue,,,,,,,,
+device_english,en,,My Mantra fingerprint scanner is not getting detected by the app,app_device,continue,,,,,,,,could also be read as aeps_issue
+bill_hinglish,hi,,Bijli ka bill payment 1850 rupaye ka fail ho gaya par paisa kat gaya,bbps_recharge,continue,1850,,,,,,,
+recharge_english,en,,A Jio recharge of 299 failed but the money was deducted,bbps_recharge,continue,299,,,,,,,
+refund_hinglish,hi,,"Mera refund kab tak aayega, transaction ID TXN775201934 hai",refund_status,,,TXN775201934,,,,,,
+fraud_hinglish,hi,,"Kisi ne mere account se bina bataye paise nikal liye, mujhe fraud lag raha hai",fraud_report,escalated,,,,,,,,
+fraud_english,en,,Someone called pretending to be from Eko and asked for my OTP,fraud_report,escalated,,,,,,,,
+wants_rm,hi,,Mujhe mere RM se baat karni hai,,escalated,,,,,,,,
+angry,hi,,"Teen din se paisa atka hai, bakwas service hai, koi sunta hi nahi",,escalated,,,,,,,,
+ticket_status,hi,,Meri pichli complaint ka kya hua?,ticket_status,resolved_by_agent,,,,,,,,
+unclear,hi,,haan... woh... hello?,,continue,,,,,,,,should ask the caller to repeat
+real_0214_login,hi,WhatsApp Audio 2026-10-14 at 2.15.32 PM.aac,,app_device,continue,,,,,,,,"DRAFT - please check: full 66 s call, 2 speakers; CSP says the default password after device registration doesnt work, cant log in. Expected issue type guessed from a rough transcript."

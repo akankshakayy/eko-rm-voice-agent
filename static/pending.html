@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waiting for approval · Eko Sahayak</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+  body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .box { width: 100%; max-width: 420px; text-align: center; }
+  .brand { display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; font-size: 20px; margin-bottom: 14px; }
+  .brand span { color: var(--accent); } .brand img { height: 36px; width: auto; }
+  .box .panel { --tone: var(--c3); padding: 26px 22px; }
+  .box .panel h2 { justify-content: center; }
+  .box .panel > h2:first-child::before { display: none; }
+  .hourglass { width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 18px; display: grid; place-items: center; background: var(--grad-sun);
+    color: #3d2200; box-shadow: 0 10px 22px -10px var(--sun-2); }
+  .row { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="brand"><img src="/static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
+  <div class="panel">
+    <div class="hourglass" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12M6 22h12M7 2c0 5 10 5 10 10S7 17 7 22M17 2c0 5-10 5-10 10s10 5 10 10"/></svg></div>
+    <h2>Your account is waiting for approval</h2>
+    <p class="muted" id="who"></p>
+    <p class="muted">An admin needs to approve your account and give it a role before you can use the console. This page checks automatically.</p>
+    <div class="row">
+      <button class="secondary" onclick="location.reload()">Check again</button>
+      <button class="secondary" onclick="signOut()">Sign out</button>
+    </div>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+loadMe().then(u => {
+  document.getElementById("who").innerHTML = `Signed in as <b>${esc(u.name)}</b> (${esc(u.email)})`
+    + (u.rm_name ? `, asking to be RM <b>${esc(u.rm_name)}</b>.` : ".");
+  if (u.role !== "pending") location.href = "/";
+});
+// Poll so the page moves on by itself once an admin approves the account
+setInterval(async () => {
+  try { const u = await (await fetch("/api/auth/me")).json(); if (u.role && u.role !== "pending") location.href = "/"; } catch (e) {}
+}, 10000);
+</script>
+</body>
+</html>

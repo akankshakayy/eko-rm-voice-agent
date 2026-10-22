@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Performance · Eko Sahayak</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/static/vendor/chart.umd.min.js"></script>
+<style>
+  .g3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .g2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 1000px) { .g3, .g2 { grid-template-columns: 1fr; } }
+  .tag { display: inline-flex; align-items: center; gap: 8px; font: 700 11.5px var(--font-body); letter-spacing: .08em; text-transform: uppercase;
+    color: #fff; background: var(--tag-bg, var(--grad-btn)); padding: 6px 13px; border-radius: 999px; box-shadow: 0 6px 14px -8px rgba(74, 92, 240, .8); }
+  .tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--sun); box-shadow: 0 0 0 3px rgba(255, 255, 255, .25); }
+  .tag.model { --tag-bg: linear-gradient(135deg, #0aa2b5, #12a46c); box-shadow: 0 6px 14px -8px rgba(10, 162, 181, .8); }
+  .help { font-size: 12.5px; color: var(--muted); margin: -6px 0 12px; }
+  .panel:has(canvas) { transition: box-shadow .2s; } .panel:has(canvas):hover { box-shadow: var(--shadow-lift); }
+</style>
+</head>
+<body>
+<header class="top" id="nav"></header>
+<main>
+  <div class="section-title"><span class="tag">Agent workflow</span></div>
+  <div class="kpis" id="agentKpis"></div>
+  <div class="g2">
+    <section class="panel"><h2><span class="live-dot"></span> Ongoing calls <span class="muted small" id="liveCount"></span></h2>
+      <div class="table-wrap"><table><thead><tr><th>Call</th><th>CSP</th><th>Dir.</th><th>Intent so far</th><th>Turns</th><th>Duration</th></tr></thead><tbody id="live"></tbody></table></div></section>
+    <section class="panel" style="--tone:var(--c1)"><h2>Call volume</h2><div class="chart-box"><canvas id="cVolume"></canvas></div></section>
+  </div>
+  <div class="g3" style="margin-top:14px">
+    <section class="panel" style="--tone:var(--c5)"><h2>Call intent</h2><div class="chart-box"><canvas id="cIntent"></canvas></div></section>
+    <section class="panel" style="--tone:var(--c3)"><h2>Call outcome</h2><div class="chart-box"><canvas id="cOutcome"></canvas></div></section>
+    <section class="panel" style="--tone:var(--c6)"><h2>Call duration</h2><div class="chart-box"><canvas id="cDuration"></canvas></div></section>
+  </div>
+  <div class="kpis" id="ticketKpis" style="margin-top:14px"></div>
+
+  <section class="panel" style="--tone:var(--c9)">
+    <h2>Recent calls</h2>
+    <p class="help">Ticket status updates live. When an RM closes a ticket, it shows here.</p>
+    <div class="table-wrap" style="max-height:560px;overflow-y:auto"><table><thead style="position:sticky;top:0;z-index:1"><tr><th>#</th><th>Time</th><th>Dir.</th><th>CSP</th><th>Intent</th><th>Duration</th><th>Outcome</th><th>Ticket</th><th>Ticket status</th></tr></thead><tbody id="recent"></tbody></table></div>
+  </section>
+
+  <div class="section-title" style="margin-top:28px"><span class="tag model">Model performance</span> <span class="small muted" id="engineTag"></span></div>
+  <div class="kpis" id="modelKpis"></div>
+  <div class="g3">
+    <section class="panel" style="--tone:var(--c2)"><h2>Intent accuracy by category</h2><p class="help">Agent's category compared with the category the RM confirmed</p><div class="chart-box"><canvas id="cAcc"></canvas></div></section>
+    <section class="panel" style="--tone:var(--c7)"><h2>Response latency (ms)</h2><p class="help">Time for the NLU engine to decide each turn</p><div class="chart-box"><canvas id="cLat"></canvas></div></section>
+    <section class="panel" style="--tone:var(--c4)"><h2>Most common mix-ups</h2><p class="help">Agent predicted → RM corrected to</p><div id="confusions"></div>
+      <h2 style="margin-top:16px">Engine errors / fallbacks</h2><div id="errors"></div></section>
+  </div>
+</main>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer"></aside>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let HOURS = 168, charts = {}, LIVE = [];
+const OUT_COLORS = { ticket_raised: "--c1", resolved_by_agent: "--c2", escalated: "--c3", not_understood: "--c4", dropped: "--c8", info_only: "--c6" };
+
+(async () => {
+  await loadConfig(); chartDefaults();
+  $("nav").innerHTML = navHtml("/ops") + `<div class="right">
+    <select id="range"><option value="24">Last 24 hours</option><option value="168" selected>Last 7 days</option><option value="720">Last 30 days</option></select>
+    <button class="secondary" id="simBtn" title="Plays simulated CSP calls in real time using the free rules engine">▶ Simulate 5 live calls</button>
+    <span class="small muted" id="updated"></span></div>`;
+  $("range").onchange = e => { HOURS = +e.target.value; refresh(); };
+  $("simBtn").onclick = async () => { $("simBtn").disabled = true; await api("/api/simulate", { method: "POST", body: { calls: 5, live: true } }); setTimeout(() => $("simBtn").disabled = false, 8000); };
+  $("drawerBg").onclick = closeDrawer;
+  $("engineTag").textContent = `Engine: ${CONFIG.engine !== "rules" ? CONFIG.engine_label + " · " + CONFIG.model : "rules fallback (set GROQ_API_KEY for a free LLM)"}`;
+  refresh(); setInterval(refresh, 4000); setInterval(tickLive, 1000);
+})();
+
+function kpis(el, items) {
+  $(el).innerHTML = items.map(([l, v, s, cls, tone]) => `<div class="kpi"${tone ? ` style="--tone:var(${tone})"` : ""}><div class="label">${l}</div><div class="value ${cls || ""}">${v}</div><div class="sub">${s || ""}</div></div>`).join("");
+}
+function chart(id, cfg) { if (charts[id]) { charts[id].data = cfg.data; charts[id].update("none"); } else charts[id] = new Chart($(id), cfg); }
+const noGrid = { grid: { display: false } };
+
+async function refresh() {
+  const [a, m] = await Promise.all([api(`/api/metrics/agent?hours=${HOURS}`), api(`/api/metrics/model?hours=${HOURS}`)]);
+  const T = a.totals;
+  kpis("agentKpis", [
+    ["Total calls", num(T.calls), `${T.inbound} in · ${T.outbound} out`],
+    ["Ongoing now", num(T.ongoing), "live on the line"],
+    ["Avg duration", fmtDur(T.avg_duration_sec), `median ${fmtDur(T.median_duration_sec)}`],
+    ["Ticket raised", T.ticket_raise_rate + "%", "of completed calls"],
+    ["Escalated to RM", T.escalation_rate + "%", "agent handed over"],
+    ["Not understood", T.not_understood_rate + "%", "marked & sent to RM"],
+    ["Solved by agent", num(T.self_resolved), "no ticket needed"],
+    ["Handled without RM", T.agent_handled_rate + "%", "no escalation needed"],
+  ]);
+  const tk = a.tickets;
+  kpis("ticketKpis", [
+    ["Tickets created", num(tk.total), `${tk.escalated} were escalations`],
+    ["Open", num(tk.open), "not yet picked up"], ["In progress", num(tk.in_progress), "RM working on it"],
+    ["Closed / resolved", num(tk.closed + tk.resolved), ""],
+    ["Avg time to close", tk.avg_resolution_hours != null ? tk.avg_resolution_hours + " h" : "–", ""],
+    ["SLA breached", num(tk.sla_breached), "late or overdue", "", "--c4"],
+  ]);
+
+  LIVE = a.live_calls; tickLive();
+
+  const P = PALETTE();
+  const lbl = a.timeline.map(p => a.bucket_sec === 3600 ? new Date(p.t * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", timeZone: "Asia/Kolkata" }) : new Date(p.t * 1000).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" }));
+  chart("cVolume", { type: "bar", data: { labels: lbl, datasets: [{ label: "Calls", data: a.timeline.map(p => p.calls), backgroundColor: fade(P[0]), hoverBackgroundColor: P[4], borderRadius: 6 }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: noGrid, y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  const it = a.intents.slice(0, 8);
+  chart("cIntent", { type: "bar", data: { labels: it.map(i => i.label.split(" / ")[0].replace(/\(.*\)/, "").trim()), datasets: [{ data: it.map(i => i.count), backgroundColor: it.map(i => catColor(i.intent)), borderRadius: 6 }] },
+    options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0 } }, y: noGrid } } });
+  const oc = Object.entries(a.outcomes);
+  chart("cOutcome", { type: "doughnut", data: { labels: oc.map(([k]) => OUTCOME[k]?.[0] || k), datasets: [{ data: oc.map(([, v]) => v), backgroundColor: oc.map(([k]) => cssVar(OUT_COLORS[k] || "--c8")), borderColor: cssVar("--panel"), borderWidth: 2 }] },
+    options: { maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "right" } } } });
+  chart("cDuration", { type: "bar", data: { labels: a.duration_hist.map(h => h.bucket), datasets: [{ data: a.duration_hist.map(h => h.count), backgroundColor: fade(P[5]), hoverBackgroundColor: P[1], borderRadius: 6 }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: noGrid, y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+
+  $("recent").innerHTML = a.recent_calls.map(c => `<tr class="clickable" onclick="openCall(${c.id})">
+    <td class="mono">${c.id}</td><td>${fmtTime(c.started_at)}</td><td>${c.direction === "inbound" ? "↙ in" : "↗ out"}</td>
+    <td>${esc(c.csp_name || "Unknown")}<div class="small muted">RM ${esc((c.rm_name || "–").split(" ")[0])}</div></td>
+    <td>${catChip(c.intent)}${c.intent_confidence != null ? `<div class="small muted">${Math.round(c.intent_confidence * 100)}% conf.</div>` : ""}</td>
+    <td class="mono">${c.status === "ongoing" ? '<span class="live-dot"></span> live' : fmtDur(c.duration_sec)}</td>
+    <td>${c.status === "ongoing" ? '<span class="badge b-info">In call</span>' : badge(OUTCOME, c.outcome)}</td>
+    <td class="mono small nowrap">${c.ticket_no || '<span class="muted">No ticket</span>'}</td>
+    <td>${c.ticket_status ? badge(STATUS, c.ticket_status) + (c.ticket_closed_at ? `<div class="small muted">closed ${fmtTime(c.ticket_closed_at)}</div>` : "") : "–"}</td></tr>`).join("")
+    || `<tr><td colspan="9" class="empty">No calls yet. Use the call console or "Simulate" above.</td></tr>`;
+
+  // ---- model
+  const I = m.intent;
+  kpis("modelKpis", [
+    ["Intent accuracy", I.accuracy_pct != null ? I.accuracy_pct + "%" : "–", `${I.labelled_tickets} tickets confirmed by RMs`],
+    ["Avg intent confidence", I.avg_confidence != null ? Math.round(I.avg_confidence * 100) + "%" : "–", `${I.low_conf_pct}% of turns below threshold`],
+    ["Speech-to-text confidence", m.stt.avg_confidence != null ? Math.round(m.stt.avg_confidence * 100) + "%" : "–", `${m.stt.low_conf_pct}% of turns too unclear`],
+    ["Latency p50 / p95 (ms)", m.latency_ms.p50 != null ? `${num(m.latency_ms.p50)} / ${num(m.latency_ms.p95)}` : "–", m.latency_ms.llm_p50 != null ? `LLM only: ${num(m.latency_ms.llm_p50)} / ${num(m.latency_ms.llm_p95)} ms` : "per turn, engine only"],
+    ["Details captured", m.slot_completeness_pct != null ? m.slot_completeness_pct + "%" : "–", "required fields filled per ticket"],
+    ["Avg turns per call", m.avg_turns_per_call, `${m.misunderstood_turn_pct}% turns misunderstood`],
+    ["Tokens per call", num(m.tokens.avg_per_call), `${num(m.tokens.input)} in · ${num(m.tokens.output)} out`],
+    ["Est. LLM cost", "₹" + num(m.cost.inr, 2), `₹${num(m.cost.inr_per_call, 3)} per call`],
+    ["Engine errors", num(m.errors.count), `${m.errors.fallback_pct}% turns fell back to rules`, m.errors.count ? "overdue" : ""],
+  ]);
+  const pi = I.per_intent.sort((x, y) => y.n - x.n);
+  chart("cAcc", { type: "bar", data: { labels: pi.map(p => p.label.split(" / ")[0].replace(/\(.*\)/, "").trim()), datasets: [{ data: pi.map(p => p.accuracy_pct), backgroundColor: pi.map(p => p.accuracy_pct >= 90 ? P[1] : p.accuracy_pct >= 75 ? P[2] : P[3]), borderRadius: 4 }] },
+    options: { indexAxis: "y", maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.raw}% of ${pi[c.dataIndex].n} tickets` } } }, scales: { x: { min: 0, max: 100, ticks: { callback: v => v + "%" } }, y: noGrid } } });
+  const lt = m.latency_trend;
+  chart("cLat", { type: "line", data: { labels: lt.map(p => new Date(p.t * 1000).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })),
+    datasets: [{ label: "p50", data: lt.map(p => p.p50), borderColor: P[0], backgroundColor: P[0] + "22", fill: true, borderWidth: 2.5, tension: .3 },
+      { label: "p95", data: lt.map(p => p.p95), borderColor: P[6], backgroundColor: P[6] + "18", fill: true, borderWidth: 2.5, tension: .3 }] },
+    options: { maintainAspectRatio: false, scales: { x: noGrid, y: { beginAtZero: true } } } });
+  $("confusions").innerHTML = I.top_confusions.length ? `<table><tbody>${I.top_confusions.map(c => `<tr><td>${esc(c.predicted)}</td><td class="muted">→</td><td>${esc(c.actual)}</td><td class="mono">${c.count}</td></tr>`).join("")}</tbody></table>` : `<div class="empty small">No mix-ups recorded yet</div>`;
+  $("errors").innerHTML = m.errors.recent.length ? m.errors.recent.map(e => `<div class="small"><span class="muted">${fmtTime(e.ts)}</span> ${esc(e.error)}</div>`).join("") : `<div class="empty small">None</div>`;
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function tickLive() {
+  const now = Date.now() / 1000;
+  $("liveCount").textContent = LIVE.length ? `(${LIVE.length})` : "";
+  $("live").innerHTML = LIVE.length ? LIVE.map(c => `<tr class="clickable" onclick="openCall(${c.id})"><td class="mono">${c.id}</td><td>${esc(c.csp_name || "Unknown")}</td><td>${c.direction === "inbound" ? "↙ in" : "↗ out"}</td><td>${catChip(c.intent)}</td><td>${c.turn_count}</td><td class="mono">${fmtDur(now - c.started_at)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No ongoing calls</td></tr>`;
+}
+
+async function openCall(id) {
+  const c = await api(`/api/calls/${id}`);
+  $("drawer").innerHTML = `<div class="drawer-head"><div><h2>Call #${c.id}</h2><div class="sub">${esc(c.csp_name || "Unknown caller")} · ${fmtTime(c.started_at)}</div></div><button class="secondary" onclick="closeDrawer()">Close</button></div>
+    <dl class="kv">
+      <dt>CSP</dt><dd>${esc(c.csp_name || "Unknown")} ${c.csp_code ? `(${c.csp_code})` : ""}</dd><dt>RM</dt><dd>${esc(c.rm_name || "–")}</dd>
+      <dt>Direction</dt><dd>${c.direction} · ${c.purpose}</dd><dt>Started</dt><dd>${fmtTime(c.started_at)}</dd>
+      <dt>Duration</dt><dd>${c.status === "ongoing" ? "live" : fmtDur(c.duration_sec)}</dd>
+      <dt>Intent</dt><dd>${catChip(c.intent)} ${c.intent_confidence != null ? `(${Math.round(c.intent_confidence * 100)}%)` : ""}</dd>
+      <dt>Outcome</dt><dd>${c.status === "ongoing" ? "In call" : badge(OUTCOME, c.outcome)} ${c.ticket_no ? `· <span class="mono">${c.ticket_no}</span> ${badge(STATUS, c.ticket_status)}` : ""}</dd>
+      ${c.escalation_reason ? `<dt>Escalation</dt><dd>${esc(c.escalation_reason)}</dd>` : ""}
+      <dt>Engine</dt><dd>${esc(c.engine)}</dd>
+    </dl>
+    <h3 style="margin-top:18px">Transcript & per-turn model data</h3>
+    ${c.turns.map(t => `<div class="bubble ${t.role}">${esc(t.text)}<div class="meta">${[
+      t.stt_confidence != null ? `STT ${Math.round(t.stt_confidence * 100)}%` : "",
+      t.intent ? `intent ${esc(t.intent)} ${t.intent_confidence != null ? Math.round(t.intent_confidence * 100) + "%" : ""}` : "",
+      t.latency_ms != null ? `${num(t.latency_ms, 1)} ms` : "", t.engine && t.role === "csp" ? esc(t.engine) : "", t.error ? `⚠ ${esc(t.error)}` : ""].filter(Boolean).join(" · ")}</div></div>`).join("")}`;
+  $("drawer").classList.add("open"); $("drawerBg").classList.add("open");
+}
+function closeDrawer() { $("drawer").classList.remove("open"); $("drawerBg").classList.remove("open"); }
+</script>
+</body>
+</html>

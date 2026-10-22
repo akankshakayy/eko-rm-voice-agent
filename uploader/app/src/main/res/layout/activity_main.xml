@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:fitsSystemWindows="true">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="16dp">
+
+        <TextView style="@style/Heading" android:text="@string/step_server" />
+        <EditText android:id="@+id/server" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="https://sahayak.example.in" android:inputType="textUri" android:importantForAutofill="no" />
+        <EditText android:id="@+id/token" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="@string/token_hint" android:inputType="textPassword" android:importantForAutofill="no" />
+        <Button android:id="@+id/test" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/test_connection" />
+        <TextView android:id="@+id/test_result" android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView style="@style/Heading" android:text="@string/step_sim" />
+        <Spinner android:id="@+id/sim" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <TextView style="@style/Hint" android:text="@string/sim_hint" />
+
+        <TextView style="@style/Heading" android:text="@string/step_folder" />
+        <Button android:id="@+id/pick_folder" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="@string/pick_folder" />
+        <TextView android:id="@+id/folder" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <TextView style="@style/Hint" android:text="@string/folder_hint" />
+
+        <TextView style="@style/Heading" android:text="@string/step_schedule" />
+        <CheckBox android:id="@+id/wifi_only" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="@string/wifi_only" />
+        <Button android:id="@+id/save" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/save" />
+        <Button android:id="@+id/upload_now" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="@string/upload_now" />
+
+        <TextView style="@style/Heading" android:text="@string/status" />
+        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textIsSelectable="true" />
+    </LinearLayout>
+</ScrollView>

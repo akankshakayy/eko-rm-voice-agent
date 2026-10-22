@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Eko Sahayak</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+  body { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+  .shell { width: 100%; max-width: 920px; display: grid; grid-template-columns: 1.05fr 1fr; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 22px; overflow: hidden; box-shadow: var(--shadow-lift); animation: page-in .4s var(--ease) both; }
+  .side { position: relative; padding: 40px 36px; background: var(--grad-brand); color: #fff; display: grid; align-content: space-between; gap: 32px;
+    overflow: hidden; isolation: isolate; }
+  .side::before { content: ""; position: absolute; right: -110px; top: -130px; width: 380px; height: 380px; border-radius: 50%; z-index: -1;
+    background: radial-gradient(circle, rgba(255, 194, 61, .55) 0, rgba(255, 138, 43, .15) 42%, transparent 70%); }
+  .side::after { content: ""; position: absolute; left: -140px; bottom: -170px; width: 400px; height: 400px; border-radius: 50%; z-index: -1;
+    background: radial-gradient(circle, rgba(63, 208, 222, .32) 0, transparent 65%); }
+  .side .brand { display: flex; align-items: center; gap: 10px; font: 700 22px/1 var(--font-display); }
+  .side .brand img { height: 38px; width: auto; display: block; }
+  .side h2 { font: 700 29px/1.18 var(--font-display); letter-spacing: -.02em; margin: 0 0 18px; display: block; color: #fff; }
+  .side ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .side li { display: flex; gap: 12px; align-items: center; font-size: 14px; padding: 10px 12px; border-radius: 12px;
+    background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .16); backdrop-filter: blur(6px); }
+  .side li::before { content: ""; flex: none; width: 10px; height: 10px; border-radius: 4px; background: var(--dot, #ffc23d);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--dot, #ffc23d) 30%, transparent); }
+  .side li:nth-child(2) { --dot: #5cf0a9; } .side li:nth-child(3) { --dot: #ff9ec7; }
+  .side .foot { font-size: 12.5px; color: rgba(255, 255, 255, .75); font-weight: 600; }
+  .auth { padding: 40px 36px; display: grid; align-content: center; }
+  .auth .brand { display: none; align-items: center; gap: 8px; font: 700 20px/1 var(--font-display); margin-bottom: 18px; }
+  .auth .brand img { height: 32px; width: auto; display: block; }
+  .auth h1 { font-size: 24px; margin: 0 0 4px; }
+  .auth .sub { margin: 0 0 22px; }
+  .auth .panel { padding: 0; border: 0; box-shadow: none; background: none; }
+  .auth form { display: grid; gap: 14px; }
+  .auth label { display: grid; gap: 6px; font-weight: 600; font-size: 13px; }
+  .auth input, .auth select { width: 100%; padding: 10px 12px; font-weight: 400; }
+  .auth button[type=submit] { width: 100%; padding: 11px; margin-top: 6px; font-size: 15px; }
+  .auth .switch { margin-top: 18px; }
+  .auth .err { color: var(--bad); background: var(--bad-soft); border-radius: var(--radius-sm); padding: 9px 12px; font-weight: 600; font-size: 13px; }
+  .auth .err:empty { display: none; }
+  .hint { font-weight: 400; }
+  @media (max-width: 760px) { .shell { grid-template-columns: 1fr; } .side { display: none; } .auth { padding: 30px 22px; } .auth .brand { display: flex; } }
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="side" aria-hidden="true">
+  <div class="brand"><img src="/static/icons/eko-logo.webp" alt="" width="79" height="38"><span>Sahayak</span></div>
+  <div>
+    <h2>Every CSP call answered, in Hindi or English.</h2>
+    <ul>
+      <li>Understands the problem and collects the details</li>
+      <li>Raises tickets with the right priority and SLA</li>
+      <li>Hands fraud, anger and tricky calls straight to the RM</li>
+    </ul>
+  </div>
+  <div class="foot">Voice agent for Eko Relationship Managers</div>
+</aside>
+<div class="auth">
+  <div class="brand"><img src="/static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
+  <h1 id="heading">Welcome back</h1>
+  <p class="sub muted" id="sub"></p>
+  <div class="panel">
+    <form id="form" novalidate>
+      <div class="err" id="err" role="alert"></div>
+      <label id="nameRow">Full name<input id="name" autocomplete="name" maxlength="100"></label>
+      <label>Email<input id="email" type="email" autocomplete="email" required></label>
+      <label>Password<input id="password" type="password" required>
+        <span class="small muted hint" id="pwHint">At least 8 characters</span></label>
+      <label id="roleRow">I am<select id="rm"></select>
+        <span class="small muted hint">If you're an RM, pick your profile. An admin approves new accounts and sets your access.</span></label>
+      <button type="submit" id="submit"></button>
+    </form>
+  </div>
+  <p class="switch small" id="switch"></p>
+</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const SIGNUP = location.pathname === "/signup";
+const params = new URLSearchParams(location.search);
+// Only follow same-site paths after signing in
+const next = /^\/(?!\/)/.test(params.get("next") || "") ? params.get("next") : "/";
+const keep = params.get("next") ? `?next=${encodeURIComponent(next)}` : "";
+
+document.title = (SIGNUP ? "Create account" : "Sign in") + " · Eko Sahayak";
+$("heading").textContent = SIGNUP ? "Create your account" : "Welcome back";
+$("sub").textContent = SIGNUP ? "An admin approves new accounts before they can sign in." : "Sign in to the voice agent console";
+$("submit").textContent = SIGNUP ? "Create account" : "Sign in";
+$("nameRow").hidden = $("roleRow").hidden = $("pwHint").hidden = !SIGNUP;
+$("password").autocomplete = SIGNUP ? "new-password" : "current-password";
+$("switch").innerHTML = SIGNUP
+  ? `Already have an account? <a href="/login${keep}">Sign in</a>`
+  : `New here? <a href="/signup${keep}">Create an account</a>`;
+
+if (SIGNUP) {
+  fetch("/api/auth/rms").then(r => r.json()).then(rms => {
+    $("rm").innerHTML = rms.map(r => `<option value="${r.id}">RM: ${esc(r.name)} · ${esc(r.region)}</option>`).join("")
+      + `<option value="">Ops / other (not an RM)</option>`;
+  });
+}
+(SIGNUP ? $("name") : $("email")).focus();
+
+$("form").onsubmit = async e => {
+  e.preventDefault();
+  $("err").textContent = "";
+  const body = { email: $("email").value.trim(), password: $("password").value };
+  if (SIGNUP) {
+    body.name = $("name").value.trim();
+    body.rm_id = $("rm").value ? Number($("rm").value) : null;
+    if (!body.name) return ($("err").textContent = "Enter your name");
+    if (body.password.length < 8) return ($("err").textContent = "Password must be at least 8 characters");
+  }
+  $("submit").disabled = true;
+  try {
+    const r = await fetch(SIGNUP ? "/api/auth/signup" : "/api/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.ok) return location.replace(next);
+    const j = await r.json().catch(() => ({}));
+    $("err").textContent = typeof j.detail === "string" ? j.detail : "Please check the details and try again";
+  } catch (err) {
+    $("err").textContent = "Couldn't reach the server. Try again.";
+  }
+  $("submit").disabled = false;
+};
+</script>
+</body>
+</html>

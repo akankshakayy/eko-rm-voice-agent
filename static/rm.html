@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RM Dashboard · Eko Sahayak</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+  .two { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+  @media (max-width: 1000px) { .two { grid-template-columns: 1fr; } }
+  #escList { display: grid; gap: 8px; max-height: 520px; overflow-y: auto; padding: 2px; }
+  .esc-card { position: relative; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px 12px 18px; cursor: pointer;
+    background: var(--panel); transition: transform .18s var(--ease), box-shadow .18s, border-color .18s; }
+  .esc-card::before { content: ""; position: absolute; left: 6px; top: 12px; bottom: 12px; width: 4px; border-radius: 4px; background: var(--warn); }
+  .esc-card.critical::before { background: var(--bad); }
+  .esc-card { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 7%, var(--panel)), var(--panel) 60%); }
+  .esc-card.critical { background: linear-gradient(90deg, color-mix(in srgb, var(--bad) 9%, var(--panel)), var(--panel) 60%);
+    border-color: color-mix(in srgb, var(--bad) 25%, var(--border)); }
+  .count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 999px; font: 700 12px/1 var(--font-body);
+    background: var(--bad); color: #fff; }
+  .count:empty { display: none; }
+  .more { display: flex; justify-content: center; gap: 10px; align-items: center; margin-top: 14px; }
+  .esc-card:hover { transform: translateX(3px); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); box-shadow: var(--shadow-lift); }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters input { flex: 1; }
+  .overdue { color: var(--bad); font-weight: 600; }
+  .ev { font-size: 12.5px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+</style>
+</head>
+<body>
+<header class="top" id="nav"></header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <div class="two">
+    <section class="panel" style="--tone:var(--bad)">
+      <h2>Needs your attention <span class="count" id="escCount"></span></h2>
+      <p class="small muted" style="margin-top:-6px">Calls the agent escalated: not understood, CSP asked for you, fraud, angry caller, or dropped mid-issue.</p>
+      <div id="escList"></div>
+    </section>
+    <section class="panel">
+      <h2><span class="live-dot"></span> Live agent calls with your CSPs</h2>
+      <div id="liveList"></div>
+      <h2 style="margin-top:22px">Your CSPs' top issues <span class="small muted">7 days</span></h2>
+      <div id="intentBars"></div>
+    </section>
+  </div>
+
+  <div class="section-title">All tickets</div>
+  <section class="panel" style="--tone:var(--c5)">
+    <div class="filters">
+      <select id="fStatus"><option value="open,in_progress">Open + in progress</option><option value="">All statuses</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved,closed">Resolved / closed</option></select>
+      <select id="fCat"><option value="">All categories</option></select>
+      <input id="fSearch" placeholder="Search CSP, ticket no, details…" style="min-width:240px">
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Ticket</th><th>Created</th><th>CSP</th><th>Issue</th><th>Priority</th><th>Status</th><th>SLA</th><th>Source</th></tr></thead>
+      <tbody id="tickets"></tbody>
+    </table></div>
+    <div class="more" id="more"></div>
+  </section>
+</main>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer"></aside>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let RM = null, TICKETS = [];
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+(async () => {
+  await loadConfig();
+  const [rms, me] = await Promise.all([api("/api/rms"), loadMe()]);
+  // Opens on the signed-in RM's own queue; remembers the last view per user
+  RM = me.role === "rm" ? String(me.rm_id)   // RMs are locked to their own queue (server enforces it too)
+    : localStorageGet(`rm_id:${me.id}`) ?? (me.rm_id ? String(me.rm_id) : "");
+  $("nav").innerHTML = navHtml("/rm") + `<div class="right"><span class="small muted">Viewing</span>
+    <select id="rmSel">${rms.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region)}</option>`).join("")}<option value="">All RMs</option></select>
+    <span class="small muted" id="updated"></span></div>`;
+  $("rmSel").value = RM;
+  if (me.role === "rm") $("rmSel").disabled = true;
+  $("rmSel").onchange = e => { RM = e.target.value; localStorageSet(`rm_id:${ME.id}`, RM); refresh(); };
+  $("fCat").innerHTML += Object.entries(CONFIG.categories).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("") + `<option value="unclassified">Unclassified</option>`;
+  ["fStatus", "fCat"].forEach(id => $(id).onchange = renderTickets);
+  $("fSearch").oninput = renderTickets;
+  $("drawerBg").onclick = closeDrawer;
+  refresh(); setInterval(refresh, 5000);
+})();
+
+const rmq = () => RM ? `rm_id=${RM}&` : "";
+
+async function refresh() {
+  const [m, all, esc_] = await Promise.all([
+    api(`/api/metrics/agent?${rmq()}hours=168`),
+    api(`/api/tickets?${rmq()}limit=500`),
+    api(`/api/tickets?${rmq()}escalated=1&status=open,in_progress`),
+  ]);
+  TICKETS = all;
+  const now = Date.now() / 1000;
+  const open = all.filter(t => t.status === "open" || t.status === "in_progress");
+  const overdue = open.filter(t => t.sla_due_at < now);
+  const closed7 = all.filter(t => t.closed_at && t.closed_at > now - 7 * 86400);
+  $("kpis").innerHTML = [
+    ["Open tickets", open.length, `${all.filter(t => t.status === "open").length} not yet picked up`, "--c1"],
+    ["Escalations pending", esc_.length, "need your call-back", "--c3"],
+    ["SLA overdue", overdue.length, "open past due time", "--c4"],
+    ["Closed (7 days)", closed7.length, m.tickets.avg_resolution_hours != null ? `avg ${m.tickets.avg_resolution_hours} h to close` : "", "--c2"],
+    ["Agent calls (7 days)", m.totals.calls, `${m.totals.agent_handled_rate}% handled without you`, "--c5"],
+    ["Live calls now", m.totals.ongoing, "agent on the line", "--c6"],
+  ].map(([l, v, s, t]) => `<div class="kpi" style="--tone:var(${t})"><div class="label">${l}</div><div class="value">${num(v)}</div><div class="sub">${s}</div></div>`).join("");
+
+  const pr = { critical: 0, high: 1, medium: 2, low: 3 };
+  esc_.sort((a, b) => (pr[a.priority] - pr[b.priority]) || (a.created_at - b.created_at));
+  $("escCount").textContent = esc_.length || "";
+  $("escList").innerHTML = esc_.length ? esc_.map(t => `<div class="esc-card ${t.priority}" onclick="openTicket(${t.id})">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${esc(t.csp_name || "Unknown caller")}</b>
+        <span>${prBadge(t.priority)} ${badge(STATUS, t.status)}</span></div>
+      <div class="small">${esc(t.escalation_reason || "")}</div>
+      <div class="small muted">${catChip(t.category)} · ${t.ticket_no} · ${ago(t.created_at)} · ${t.csp_phone ? `📞 <a href="tel:${t.csp_phone}" onclick="event.stopPropagation()">${t.csp_phone}</a>` : ""}
+        · ${slaText(t)}</div></div>`).join("") : `<div class="empty">Nothing waiting. 🎉</div>`;
+
+  $("liveList").innerHTML = m.live_calls.length ? `<table><tbody>${m.live_calls.map(c => `<tr><td>${esc(c.csp_name || "Unknown")}<div class="small muted">${c.direction} · ${catChip(c.intent)}</div></td><td class="mono">${fmtDur(now - c.started_at)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty small">No calls in progress</div>`;
+  const maxI = Math.max(1, ...m.intents.map(i => i.count));
+  $("intentBars").innerHTML = m.intents.slice(0, 6).map(i => `<div class="bar-row" style="--tone:var(${catTone(i.intent)})"><div>${catChip(i.intent, i.label)}<div class="bar"><i style="width:${100 * i.count / maxI}%"></i></div></div><div class="mono" style="text-align:right">${i.count}</div></div>`).join("") || `<div class="empty small">No calls yet</div>`;
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  renderTickets();
+}
+
+function slaText(t) {
+  if (t.closed_at) return t.closed_at > t.sla_due_at ? `<span class="overdue">closed late</span>` : `<span style="color:var(--ok)">met</span>`;
+  const left = t.sla_due_at - Date.now() / 1000;
+  return left < 0 ? `<span class="overdue">overdue ${span(-left)}</span>` : `${span(left)} left`;
+}
+const span = s => s >= 86400 ? Math.round(s / 86400) + "d" : s >= 3600 ? Math.round(s / 3600) + "h" : Math.max(1, Math.round(s / 60)) + "m";
+
+const PAGE = 25;
+let shown = PAGE;
+function renderTickets(e) {
+  if (e) shown = PAGE;  // a filter changed: start from the first page again
+  const st = $("fStatus").value.split(",").filter(Boolean), cat = $("fCat").value, q = $("fSearch").value.toLowerCase();
+  const rows = TICKETS.filter(t => (!st.length || st.includes(t.status)) && (!cat || t.category === cat) &&
+    (!q || JSON.stringify([t.ticket_no, t.csp_name, t.csp_code, t.summary, t.details]).toLowerCase().includes(q)));
+  $("tickets").innerHTML = rows.length ? rows.slice(0, shown).map(t => `<tr class="clickable" onclick="openTicket(${t.id})">
+    <td class="mono nowrap">${t.ticket_no}</td><td class="nowrap">${fmtTime(t.created_at)}</td>
+    <td>${esc(t.csp_name || "Unknown")}<div class="small muted">${t.csp_code || ""} · ${esc(t.district || "")}</div></td>
+    <td>${catChip(t.category)}<div class="small muted">${esc((t.summary || "").slice(0, 90))}</div></td>
+    <td>${prBadge(t.priority)}</td><td>${badge(STATUS, t.status)}</td><td class="small">${slaText(t)}</td>
+    <td>${t.escalated ? '<span class="badge b-warn">Escalated</span>' : '<span class="badge b-accent">Agent</span>'}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="empty">No tickets match</td></tr>`;
+  $("more").innerHTML = rows.length > PAGE ? `<span class="small muted">Showing ${Math.min(shown, rows.length)} of ${rows.length}</span>`
+    + (shown < rows.length ? `<button class="secondary" onclick="shown += ${PAGE}; renderTickets()">Show more</button>` : "") : "";
+}
+
+async function openTicket(id) {
+  const t = await api(`/api/tickets/${id}`);
+  const catOpts = Object.entries(CONFIG.categories).map(([k, v]) => `<option value="${k}" ${(t.rm_category || t.category) === k ? "selected" : ""}>${esc(v.label)}</option>`).join("");
+  $("drawer").innerHTML = `<div class="drawer-head"><div><h2 class="mono">${t.ticket_no}</h2><div class="sub">${esc(t.csp_name || "Unknown caller")} · ${esc(catLabel(t.category))}</div></div><button class="secondary" onclick="closeDrawer()">Close</button></div>
+    <div style="margin:8px 0 14px">${prBadge(t.priority)} ${badge(STATUS, t.status)} ${t.escalated ? '<span class="badge b-warn">Escalated</span>' : ""}</div>
+    ${t.escalation_reason ? `<p><b>Why escalated:</b> ${esc(t.escalation_reason)}</p>` : ""}
+    <dl class="kv">
+      <dt>CSP</dt><dd>${esc(t.csp_name || "Unknown")} (${t.csp_code || "–"}) · ${esc(t.shop_name || "")}</dd>
+      <dt>Phone</dt><dd>${t.csp_phone ? `<a href="tel:${t.csp_phone}">${t.csp_phone}</a>` : "–"}</dd>
+      <dt>Agent's category</dt><dd>${catChip(t.category)}</dd>
+      <dt>Summary</dt><dd>${esc(t.summary)}</dd>
+      ${Object.entries(t.details).map(([k, v]) => `<dt>${esc(CONFIG.slot_labels[k] || k)}</dt><dd>${esc(v)}</dd>`).join("")}
+      <dt>Details captured</dt><dd>${Math.round((t.slot_completeness ?? 0) * 100)}%</dd>
+      <dt>Created</dt><dd>${fmtTime(t.created_at)} · SLA ${slaText(t)}</dd>
+      ${t.closed_at ? `<dt>Closed</dt><dd>${fmtTime(t.closed_at)}</dd>` : ""}
+    </dl>
+    <h3 style="margin-top:18px">Update</h3>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <div><label class="small muted">Status</label><select id="dStatus" style="width:100%">${["open", "in_progress", "resolved", "closed"].map(s => `<option value="${s}" ${t.status === s ? "selected" : ""}>${STATUS[s][0]}</option>`).join("")}</select></div>
+      <div><label class="small muted">Correct category ${t.rm_category ? "✓" : ""}</label><select id="dCat" style="width:100%">${catOpts}</select></div>
+    </div>
+    <textarea id="dNote" rows="2" placeholder="Add a note (optional)" style="width:100%;margin-top:8px"></textarea>
+    <button style="margin-top:8px" onclick="saveTicket(${t.id})">Save</button>
+    <p class="small muted">Confirming the category trains the model metrics (intent accuracy).</p>
+    <h3 style="margin-top:18px">Call transcript</h3>
+    ${t.transcript.map(m => `<div class="bubble ${m.role}">${esc(m.text)}${m.stt_confidence != null ? `<div class="meta">speech conf ${Math.round(m.stt_confidence * 100)}%</div>` : ""}</div>`).join("") || '<div class="muted">No transcript</div>'}
+    <h3 style="margin-top:18px">History</h3>
+    ${t.events.map(e => `<div class="ev"><span class="muted">${fmtTime(e.ts)}</span> · <b>${esc(e.actor)}</b> ${esc(e.action)} ${e.note ? "· " + esc(e.note) : ""}</div>`).join("")}`;
+  $("drawer").classList.add("open"); $("drawerBg").classList.add("open");
+}
+function closeDrawer() { $("drawer").classList.remove("open"); $("drawerBg").classList.remove("open"); }
+async function saveTicket(id) {
+  await api(`/api/tickets/${id}`, { method: "PATCH", body: { status: $("dStatus").value, rm_category: $("dCat").value, note: $("dNote").value || null } });
+  await openTicket(id); refresh();
+}
+</script>
+</body>
+</html>

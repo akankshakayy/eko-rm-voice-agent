@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+data/
+.env
+evals/audio/*
+!evals/audio/.gitkeep
+evals/results/
+evals/candidates.csv
+
+# Eko-internal documents: share them directly, not through GitHub
+docs/*.pdf
+docs/*.xlsx
