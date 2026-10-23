@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Waiting for approval · Eko Sahayak</title>
+<title>No access · Eko Sahayak</title>
 <link rel="icon" href="favicon.ico" sizes="48x48">
 <link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
@@ -27,9 +27,9 @@
   <div class="brand"><img src="static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
   <div class="panel">
     <div class="hourglass" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12M6 22h12M7 2c0 5 10 5 10 10S7 17 7 22M17 2c0 5-10 5-10 10s10 5 10 10"/></svg></div>
-    <h2>Your account is waiting for approval</h2>
+    <h2>Your account has no access right now</h2>
     <p class="muted" id="who"></p>
-    <p class="muted">An admin needs to approve your account and give it a role before you can use the console. This page checks automatically.</p>
+    <p class="muted">An admin has taken this account's access away. Ask them to give it a role again. This page checks automatically.</p>
     <p class="small" id="verify"></p>
     <div class="row">
       <button class="secondary" onclick="location.reload()">Check again</button>
@@ -47,7 +47,7 @@ loadMe().then(u => {
   document.getElementById("verify").innerHTML = u.email_verified ? "Your email is confirmed."
     : `Your email isn't confirmed yet: open the link we emailed you, or send it again from <a href="account">your account</a>.`;
 });
-// Poll so the page moves on by itself once an admin approves the account
+// Poll so the page moves on by itself once an admin gives the account a role again
 setInterval(async () => {
   try { const u = await (await fetch("api/auth/me")).json(); if (u.role && u.role !== "pending") location.href = "./"; } catch (e) {}
 }, 10000);

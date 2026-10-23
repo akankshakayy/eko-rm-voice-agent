@@ -7,6 +7,8 @@ import pytest
 
 os.environ["AGENT_ENGINE"] = "rules"
 os.environ["ALLOWED_EMAIL_DOMAINS"] = "*"   # tests use @eko.test addresses
+os.environ["ALLOW_UNVERIFIED_SIGNUP"] = "1"   # tests have no email; the confirmation tests switch this off
+os.environ["COOKIE_PATH"] = "/"               # the test client has no /rm-voice-agent prefix
 for _k in ("SMTP_HOST", "SMTP_FROM", "APP_BASE_URL", "DEMO_DATA"):
     os.environ.pop(_k, None)
 
@@ -272,7 +274,7 @@ def test_signup_login_logout_flow():
     from app import db
     c = _client()
     me = c.get("/api/auth/me").json()
-    assert me["email"] == "rahul@eko.test" and me["rm_id"] == 1 and me["rm_name"] == "Rahul Verma"
+    assert me["email"] == "rahul@eko.test" and me["rm_id"] is None        # an RM profile is never self-chosen
     stored = db.q("SELECT password_hash FROM users", one=True)["password_hash"]
     assert stored.startswith("scrypt$") and "correct horse" not in stored
     assert c.post("/api/auth/logout").status_code == 200
@@ -289,7 +291,8 @@ def test_signup_validation():
     assert c.post("/api/auth/signup", json={**ok, "email": "not-an-email"}).status_code == 400
     assert c.post("/api/auth/signup", json={**ok, "rm_id": 2}).status_code == 200
     assert c.post("/api/auth/signup", json={**ok, "name": "B"}).status_code == 409             # email taken
-    assert c.post("/api/auth/signup", json={**ok, "email": "b@eko.test", "rm_id": 2}).status_code == 409  # RM taken
+    r = c.post("/api/auth/signup", json={**ok, "email": "b@eko.test", "rm_id": 2})
+    assert r.status_code == 200 and r.json()["rm_id"] is None              # the RM asked for is ignored
     assert c.get("/api/auth/rms").status_code == 404        # the public list of RM names is gone
 
 
@@ -328,15 +331,17 @@ def _escalated_ticket(c, phone):
     return c.post(f"/api/calls/{r['call_id']}/turn", json={"text": "Mujhe RM se baat karni hai", "stt_confidence": .9}).json()
 
 
-def test_first_account_is_admin_and_new_signups_wait_for_approval():
+def test_first_account_is_admin_and_new_signups_work_straight_away():
     admin = _client()
     assert admin.get("/api/auth/me").json()["role"] == "admin"
-    pending, _ = _second_user()
-    assert pending.get("/api/auth/me").json()["role"] == "pending"
-    assert pending.get("/api/tickets").status_code == 403
-    r = pending.get("/rm", follow_redirects=False)
+    new, uid = _second_user()
+    assert new.get("/api/auth/me").json()["role"] == "ops"                 # no admin approval any more
+    assert new.get("/api/tickets").status_code == 200
+    assert new.get("/api/users").status_code == 403                        # but not user management
+    admin.patch(f"/api/users/{uid}", json={"role": "pending"})              # an admin can still take access away
+    assert new.get("/api/tickets").status_code == 403
+    r = new.get("/rm", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "pending"
-    assert pending.get("/pending").status_code == 200
 
 
 def test_rm_only_sees_and_changes_their_own_tickets():
@@ -383,6 +388,8 @@ def test_admin_guards():
     assert admin.patch(f"/api/users/{me}", json={"role": "ops"}).status_code == 409   # last admin / self-demotion
     assert admin.delete(f"/api/users/{me}").status_code == 409
     other, uid = _second_user()
+    from app import db
+    db.x("UPDATE users SET rm_id=1 WHERE id=?", (me,))
     assert admin.patch(f"/api/users/{uid}", json={"role": "rm"}).status_code == 400   # RM needs a profile
     assert admin.patch(f"/api/users/{uid}", json={"role": "rm", "rm_id": 1}).status_code == 409  # taken by admin
     assert admin.patch(f"/api/users/{uid}", json={"role": "superuser"}).status_code == 400
@@ -1069,14 +1076,22 @@ def test_without_email_admin_makes_a_reset_link():
     assert _client(signed_in=False).get("/api/auth/options").json()["email"] is False
 
 
-def test_verified_email_links_the_rm_profile(mail):
+def test_verified_email_links_the_rm_profile(mail, monkeypatch):
+    from fastapi.testclient import TestClient
     from app import db
+    from app.main import app
     db.x("UPDATE rms SET email='priya.singh@eko.test' WHERE id=2")
     _client()                                                            # admin
-    c, uid = _second_user(email="priya.singh@eko.test")
-    assert c.get("/api/auth/me").json()["rm_id"] is None                # not until the email is proven
+    monkeypatch.setenv("ALLOW_UNVERIFIED_SIGNUP", "0")                   # the real rule: confirm the email first
+    c = TestClient(app)
+    body = {"email": "priya.singh@eko.test", "password": "tea at four always", "name": "Priya"}
+    assert c.post("/api/auth/signup", json=body).json() == {"verify": True, "email": "priya.singh@eko.test"}
+    r = c.post("/api/auth/login", json={"email": body["email"], "password": body["password"]})
+    assert r.status_code == 403 and "Confirm your email" in r.json()["detail"]   # not until the email is proven
+    uid = db.q("SELECT id FROM users WHERE email=?", (body["email"],), one=True)["id"]
     r = c.post("/api/auth/verify", json={"token": _link_token(mail, "verify-email")}).json()
-    assert r["email_verified"] and r["rm_id"] == 2 and r["rm_name"] == "Priya Singh" and r["role"] == "pending"
+    assert r["email_verified"] and r["rm_id"] == 2 and r["rm_name"] == "Priya Singh" and r["role"] == "rm"
+    assert c.post("/api/auth/login", json={"email": body["email"], "password": body["password"]}).status_code == 200
     assert db.q("SELECT event FROM auth_events WHERE user_id=? AND event='rm_linked'", (uid,), one=True)
 
 
@@ -1474,3 +1489,127 @@ def test_bent_bank_and_payment_names_are_mapped():
 def test_everyday_amount_reaches_the_ticket():
     r = talk([("मेरा DMT फेल हो गया, साढ़े बारह हज़ार रुपये कट गए", .9), ("TXN123456789", .9), ("कल", .9), ("हाँ जी", .9)])
     assert r["ticket"]["category"] == "dmt_failed" and '"amount": "12500"' in r["ticket"]["details_json"]
+
+
+def test_without_email_password_signups_are_closed_except_the_first(monkeypatch):
+    monkeypatch.setenv("ALLOW_UNVERIFIED_SIGNUP", "0")
+    admin = _client()                                                    # the very first account (the admin) is fine
+    assert admin.get("/api/auth/options").json()["password_signup"] is False
+    from fastapi.testclient import TestClient
+    from app.main import app
+    r = TestClient(app).post("/api/auth/signup", json={"email": "x@eko.test", "password": "tea at four always", "name": "X"})
+    assert r.status_code == 403 and "Google" in r.json()["detail"]      # can't prove the email is theirs
+
+
+def test_company_domains_only(monkeypatch):
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAINS", "eko.co.in,ekosupport.in")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    bad = c.post("/api/auth/signup", json={"email": "someone@gmail.com", "password": "tea at four always", "name": "S"})
+    assert bad.status_code == 400 and "@eko.co.in" in bad.json()["detail"]
+    ok = c.post("/api/auth/signup", json={"email": "Asha.K@Eko.co.in", "password": "tea at four always", "name": "Asha"})
+    assert ok.status_code == 200 and ok.json()["email"] == "asha.k@eko.co.in"
+
+
+def _fake_google(monkeypatch, email, sub="g-123", verified=True):
+    import httpx
+    from app import google_auth
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("APP_BASE_URL", "http://testserver")
+    monkeypatch.setattr(httpx, "post", lambda url, **k: httpx.Response(200, json={"access_token": "at"}))
+    monkeypatch.setattr(httpx, "get", lambda url, **k: httpx.Response(200, json={
+        "email": email, "email_verified": verified, "sub": sub, "name": "Asha Kumari"}))
+    return google_auth
+
+
+def test_sign_in_with_google_makes_a_ready_account(monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+    from fastapi.testclient import TestClient
+    from app import db
+    from app.main import app
+    monkeypatch.setenv("ALLOW_UNVERIFIED_SIGNUP", "0")
+    _client()                                                             # an admin exists already
+    db.x("UPDATE rms SET email='asha@eko.test' WHERE id=3")
+    _fake_google(monkeypatch, "asha@eko.test")
+    c = TestClient(app)
+    start = c.get("/api/auth/google/start?next=rm", follow_redirects=False)
+    q = parse_qs(urlparse(start.headers["location"]).query)
+    assert start.status_code == 303 and q["code_challenge_method"] == ["S256"] and q["state"]
+    bad = c.get("/api/auth/google/callback?code=x&state=forged", follow_redirects=False)
+    assert "error=" in bad.headers["location"] and c.get("/api/auth/me").status_code == 401   # state must match
+    c.get("/api/auth/google/start?next=rm", follow_redirects=False)
+    state = parse_qs(urlparse(c.get("/api/auth/google/start?next=rm", follow_redirects=False).headers["location"]).query)["state"][0]
+    back = c.get(f"/api/auth/google/callback?code=good&state={state}", follow_redirects=False)
+    assert back.status_code == 303 and back.headers["location"].endswith("rm")
+    me = c.get("/api/auth/me").json()
+    assert me["email"] == "asha@eko.test" and me["email_verified"] and me["role"] == "rm" and me["rm_id"] == 3
+    # The same Google account again finds the same user; a password login to it explains itself
+    assert db.q("SELECT COUNT(*) n FROM users WHERE email='asha@eko.test'", one=True)["n"] == 1
+    r = c.post("/api/auth/login", json={"email": "asha@eko.test", "password": "anything at all"})
+    assert r.status_code == 401 and "Google" in r.json()["detail"]
+
+
+def test_google_refuses_outside_and_unverified_emails(monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+    from fastapi.testclient import TestClient
+    from app.main import app
+    monkeypatch.setenv("ALLOWED_EMAIL_DOMAINS", "eko.co.in")
+    for email, verified in (("someone@gmail.com", True), ("asha@eko.co.in", False)):
+        _fake_google(monkeypatch, email, verified=verified)
+        c = TestClient(app)
+        state = parse_qs(urlparse(c.get("/api/auth/google/start", follow_redirects=False).headers["location"]).query)["state"][0]
+        back = c.get(f"/api/auth/google/callback?code=x&state={state}", follow_redirects=False)
+        assert "login?error=" in back.headers["location"] and c.get("/api/auth/me").status_code == 401
+
+
+def test_failed_logins_from_one_address_are_limited():
+    from fastapi.testclient import TestClient
+    from app import auth
+    from app.main import app
+    _client()
+    c = TestClient(app)
+    for i in range(auth.IP_FAILS):                                        # many accounts, one address
+        c.post("/api/auth/login", json={"email": f"guess{i}@eko.test", "password": "password guess"})
+    r = c.post("/api/auth/login", json={"email": "rahul@eko.test", "password": "correct horse"})
+    assert r.status_code == 429
+
+
+def test_login_cookie_stays_on_sahayaks_path(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    monkeypatch.setenv("COOKIE_PATH", "")
+    monkeypatch.setenv("APP_BASE_URL", "https://indev.eko.in/rm-voice-agent/")
+    r = TestClient(app).post("/api/auth/signup", json={"email": "first@eko.test", "password": "tea at four always", "name": "F"})
+    cookie = r.headers["set-cookie"]
+    assert "Path=/rm-voice-agent" in cookie and "HttpOnly" in cookie and "SameSite=lax" in cookie
+
+
+def test_admin_emails_decide_who_is_admin(monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@eko.test")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    first = TestClient(app).post("/api/auth/signup", json={"email": "early@eko.test", "password": "tea at four always", "name": "E"})
+    assert first.json()["role"] == "ops"                                 # being first doesn't make you admin
+    boss = TestClient(app).post("/api/auth/signup", json={"email": "boss@eko.test", "password": "tea at four always", "name": "B"})
+    assert boss.json()["role"] == "admin"
+
+
+def test_google_takes_over_an_unconfirmed_account_safely(monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+    from fastapi.testclient import TestClient
+    from app import db
+    from app.main import app
+    _client()                                                             # admin
+    attacker = TestClient(app)                                            # signs up with someone else's address
+    attacker.post("/api/auth/signup", json={"email": "victim@eko.test", "password": "attacker knows this", "name": "V"})
+    db.x("UPDATE users SET email_verified_at=NULL WHERE email='victim@eko.test'")
+    _fake_google(monkeypatch, "victim@eko.test", sub="g-victim")
+    c = TestClient(app)
+    state = parse_qs(urlparse(c.get("/api/auth/google/start", follow_redirects=False).headers["location"]).query)["state"][0]
+    c.get(f"/api/auth/google/callback?code=x&state={state}", follow_redirects=False)
+    assert c.get("/api/auth/me").json()["email"] == "victim@eko.test"
+    assert attacker.get("/api/auth/me").status_code == 401                 # the attacker's session is gone
+    r = TestClient(app).post("/api/auth/login", json={"email": "victim@eko.test", "password": "attacker knows this"})
+    assert r.status_code == 401                                          # and so is their password

@@ -5,10 +5,11 @@ Run:  uvicorn app.main:app --reload --port 8000
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from dotenv import load_dotenv
 
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from . import agent, auth, db, integrations, mailer, metrics, recordings, report, stt, tts  # noqa: E402
+from . import agent, auth, db, google_auth, integrations, mailer, metrics, recordings, report, stt, tts  # noqa: E402
 from .seed import seed_if_demo  # noqa: E402
 from .taxonomy import CATEGORIES, SLOT_LABELS, STT_CONFIDENCE_MIN, INTENT_CONFIDENCE_MIN, MAX_MISUNDERSTOOD  # noqa
 
@@ -57,7 +58,8 @@ seed_if_demo()
 
 # ------------------------------------------------------------------ auth
 PUBLIC_PATHS = {"/login", "/signup", "/forgot", "/reset", "/verify-email", "/favicon.ico", "/api/auth/login",
-                "/api/auth/signup", "/api/auth/forgot", "/api/auth/reset", "/api/auth/verify", "/api/auth/options"}
+                "/api/auth/signup", "/api/auth/forgot", "/api/auth/reset", "/api/auth/verify", "/api/auth/options",
+                "/api/auth/verify/send", "/api/auth/google/start", "/api/auth/google/callback"}
 PUBLIC_PREFIXES = ("/static/",)
 DEVICE_PATHS = {"/api/uploader/ping", "/api/uploader/recordings"}   # the uploader app: upload token, not a login
 STAFF = ("admin", "ops")                       # full access to calls, dashboards and metrics
@@ -67,6 +69,10 @@ PAGE_ROLES = {"/": ("admin", "ops", "rm"), "/call": STAFF, "/ops": STAFF, "/rm":
 PENDING_OK = {"/pending", "/account", "/api/auth/me", "/api/auth/logout", "/api/auth/logout-all", "/api/auth/password",
               "/api/auth/email", "/api/auth/verify/resend", "/api/auth/activity"}
 TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"   # behind nginx: take the client address from X-Forwarded-For
+# The login cookie is sent only to Sahayak's own path. On a shared host (indev.eko.in runs other people's apps too)
+# a cookie for "/" would reach every app there. Taken from APP_BASE_URL (".../rm-voice-agent"), or COOKIE_PATH.
+def cookie_path() -> str:
+    return (os.environ.get("COOKIE_PATH") or urlparse(os.environ.get("APP_BASE_URL", "")).path or "/").rstrip("/") or "/"
 
 
 def client_ip(request: Request) -> str | None:
@@ -105,7 +111,7 @@ async def require_login(request: Request, call_next):
     role = user.get("role") or "pending"
     if role == "pending" and path not in PENDING_OK:
         if path.startswith("/api/"):
-            return JSONResponse({"detail": "Your account is waiting for admin approval"}, status_code=403)
+            return JSONResponse({"detail": "Your account has no access. Ask an admin."}, status_code=403)
         return RedirectResponse("pending", status_code=303)
     if role != "pending" and path == "/pending":
         return RedirectResponse("./", status_code=303)
@@ -190,9 +196,19 @@ class EmailChangeBody(BaseModel):
 def _signed_in(user: dict, request: Request) -> JSONResponse:
     resp = JSONResponse(auth.public_user(user))
     token = auth.create_session(user["id"], client_ip(request), request.headers.get("user-agent"))
-    resp.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400,
-                    httponly=True, samesite="lax", secure=auth.COOKIE_SECURE, path="/")
+    _set_session_cookie(resp, token)
     return resp
+
+
+def _set_session_cookie(resp, token: str):
+    resp.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400,
+                    httponly=True, samesite="lax", secure=auth.COOKIE_SECURE, path=cookie_path())
+
+
+def _clear_session_cookie(resp):
+    resp.delete_cookie(auth.COOKIE, path=cookie_path())
+    if cookie_path() != "/":
+        resp.delete_cookie(auth.COOKIE, path="/")          # one set by an older version, for the whole host
 
 
 def _auth_call(fn, *args, **kw):
@@ -204,8 +220,48 @@ def _auth_call(fn, *args, **kw):
 
 @app.post("/api/auth/signup")
 def signup(body: SignupBody, request: Request):
-    return _signed_in(_auth_call(auth.signup, body.email, body.password, body.name, body.rm_id, client_ip(request)),
-                      request)
+    u = _auth_call(auth.signup, body.email, body.password, body.name, body.rm_id, client_ip(request))
+    if u.get("must_verify"):
+        # Not signed in yet: the account works once the link in the email is opened
+        return {"verify": True, "email": u["email"]}
+    return _signed_in(u, request)
+
+
+@app.post("/api/auth/verify/send")
+def send_confirmation_again(body: LoginBody, request: Request):
+    return {"sent": _auth_call(auth.resend_confirmation, body.email, body.password, client_ip(request))}
+
+
+@app.get("/api/auth/google/start")
+def google_start(next: str = "./"):
+    """Off to Google's sign-in page; it comes back to /api/auth/google/callback."""
+    if not google_auth.configured():
+        return RedirectResponse("../../../login?error=" + quote("Sign in with Google isn't set up on this server."), 303)
+    url, flow = google_auth.start(next if re.fullmatch(r"(\./|[a-z][a-z-]*|/(?!/)[\w/.-]*)", next or "") else "./",
+                                  auth.allowed_domains())
+    resp = RedirectResponse(url, 303)
+    resp.set_cookie(google_auth.COOKIE, flow, max_age=google_auth.FLOW_SECONDS, httponly=True, samesite="lax",
+                    secure=auth.COOKIE_SECURE, path=cookie_path())
+    return resp
+
+
+@app.get("/api/auth/google/callback")
+def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    back = "../../../"                                  # from /api/auth/google/callback to the site's root
+    try:
+        if error:
+            raise google_auth.GoogleError("Google sign-in was cancelled." if error == "access_denied" else
+                                          f"Google sign-in failed ({error[:40]}).")
+        who = google_auth.finish(code, state, request.cookies.get(google_auth.COOKIE))
+        u = auth.google_sign_in(who["email"], who["name"], who["sub"], client_ip(request))
+    except (google_auth.GoogleError, auth.AuthError) as e:
+        resp = RedirectResponse(back + "login?error=" + quote(str(e)), 303)
+    else:
+        nxt = who["next"]                               # checked at start: a page name, ./ or a same-site path
+        resp = RedirectResponse(nxt if nxt.startswith("/") else back + nxt, 303)
+        _set_session_cookie(resp, auth.create_session(u["id"], client_ip(request), request.headers.get("user-agent")))
+    resp.delete_cookie(google_auth.COOKIE, path=cookie_path())
+    return resp
 
 
 @app.post("/api/auth/login")
@@ -216,7 +272,8 @@ def login(body: LoginBody, request: Request):
 @app.get("/api/auth/options")
 def auth_options():
     """What the sign-in pages can offer: email links only work once SMTP is set up."""
-    return {"email": mailer.configured(), "min_password": auth.MIN_PASSWORD, "domains": auth.allowed_domains()}
+    return {"email": mailer.configured(), "min_password": auth.MIN_PASSWORD, "domains": auth.allowed_domains(),
+            "google": google_auth.configured(), "password_signup": auth.password_signup_open()}
 
 
 @app.post("/api/auth/forgot")
@@ -230,7 +287,7 @@ def forgot(body: EmailBody, request: Request):
 def reset(body: ResetBody, request: Request):
     _auth_call(auth.reset_password, body.token, body.password, client_ip(request))
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(auth.COOKIE, path="/")
+    _clear_session_cookie(resp)
     return resp
 
 
@@ -264,7 +321,7 @@ def change_email(body: EmailChangeBody, request: Request):
 def logout_all(request: Request):
     auth.end_all_sessions(request.state.user, client_ip(request))
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(auth.COOKIE, path="/")
+    _clear_session_cookie(resp)
     return resp
 
 
@@ -279,7 +336,7 @@ def my_activity(request: Request):
 def logout(request: Request):
     auth.end_session(request.cookies.get(auth.COOKIE))
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(auth.COOKIE, path="/")
+    _clear_session_cookie(resp)
     return resp
 
 

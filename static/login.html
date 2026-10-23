@@ -47,6 +47,14 @@
   .pwlabel { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .pwlabel a { font-weight: 600; }
   .hint { font-weight: 400; }
+  .google { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 10px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); color: var(--text);
+    font-weight: 600; font-size: 14px; text-decoration: none; }
+  .google:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); color: var(--text); }
+  .google svg { width: 18px; height: 18px; flex: none; }
+  .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 16px 0 2px; }
+  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .google[hidden], .or[hidden] { display: none; }
   @media (max-width: 760px) { .shell { grid-template-columns: 1fr; } .side { display: none; } .auth { padding: 30px 22px; } .auth .brand { display: flex; } }
 </style>
 </head>
@@ -69,6 +77,10 @@
   <h1 id="heading">Welcome back</h1>
   <p class="sub muted" id="sub"></p>
   <div class="panel">
+    <a class="google" id="google" href="api/auth/google/start" hidden>
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
+      <span id="googleText">Sign in with Google</span></a>
+    <div class="or" id="or" hidden>or with email and password</div>
     <form id="form" novalidate>
       <div class="err" id="err" role="alert"></div>
       <div class="ok" id="ok" role="status"></div>
@@ -96,11 +108,11 @@ if (TOKEN) history.replaceState(null, "", location.pathname);
 const safe = v => /^(\/(?!\/)|\.\/|[a-z])/.test(v) && !/[:\\]|\/\//.test(v);
 const next = safe(params.get("next") || "") ? params.get("next") : "./";
 const keep = params.get("next") ? `?next=${encodeURIComponent(next)}` : "";
-let OPTS = { email: false, min_password: 10, domains: [] };
+let OPTS = { email: false, min_password: 10, domains: [] }, LAST = null;
 
 const TEXT = {
   login: ["Sign in", "Welcome back", "Sign in to the voice agent console", "Sign in"],
-  signup: ["Create account", "Create your account", "Use your work email. An admin approves new accounts before they can sign in.", "Create account"],
+  signup: ["Create account", "Create your account", "For Eko employees, with your work email.", "Create account"],
   forgot: ["Forgot password", "Reset your password", "We'll email you a link to choose a new password.", "Send reset link"],
   "verify-email": ["Confirm email", "Confirming your email…", "", ""],
   reset: ["New password", "Choose a new password", "You'll be signed out everywhere and can sign in with the new one.", "Save new password"],
@@ -126,8 +138,23 @@ const show = (id, msg) => { $("err").textContent = ""; $("ok").textContent = "";
 const detail = async r => { const j = await r.json().catch(() => ({})); return typeof j.detail === "string" ? j.detail : "Please check the details and try again"; };
 const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
+// Messages Google sign-in sends back (always shown as text, never as HTML)
+const ERR = params.get("error");
+if (ERR) setTimeout(() => show("err", ERR.slice(0, 300)), 0);
+
 fetch("api/auth/options").then(r => r.json()).then(o => {
   OPTS = o;
+  if (o.google && (MODE === "login" || MODE === "signup")) {
+    $("google").hidden = $("or").hidden = false;
+    $("google").href = `api/auth/google/start?next=${encodeURIComponent(next)}`;
+    $("googleText").textContent = MODE === "signup" ? "Sign up with Google" : "Sign in with Google";
+  }
+  if (MODE === "signup" && !o.password_signup) {
+    // Without email the server can't confirm a password signup, so only Google is offered
+    $("form").hidden = true; $("or").hidden = true;
+    $("sub").textContent = o.google ? "Use your Eko Google account. Your account is ready as soon as you sign in."
+      : "Account creation needs Google sign-in or email set up on this server. Ask an admin.";
+  }
   if (MODE === "signup" || MODE === "reset") $("pwHint").textContent = `At least ${o.min_password} characters. A short sentence works well.`;
   if (MODE === "signup" && o.domains.length) $("emailHint").textContent = `Work email only (${o.domains.map(d => "@" + d).join(", ")}). If it's the email on the RM calling sheet, your RM profile is linked once you confirm it.`;
   if (MODE === "forgot" && !o.email) $("sub").textContent = "Email isn't set up on this server yet, so ask an admin for a reset link. They can make one on the Users page.";
@@ -152,7 +179,7 @@ $("form").onsubmit = async e => {
   show("err", "");
   const email = $("email").value.trim(), password = $("password").value;
   let path, body;
-  if (MODE === "login") { path = "api/auth/login"; body = { email, password }; }
+  if (MODE === "login") { path = "api/auth/login"; body = { email, password }; LAST = body; }
   if (MODE === "signup") {
     body = { email, password, name: $("name").value.trim() }; path = "api/auth/signup";
     if (!body.name) return show("err", "Enter your name");
@@ -167,6 +194,23 @@ $("form").onsubmit = async e => {
   $("submit").disabled = true;
   try {
     const r = await post(path, body);
+    const data = r.ok ? await r.clone().json().catch(() => ({})) : {};
+    if (r.ok && MODE === "signup" && data.verify) {
+      $("form").hidden = true; $("google").hidden = $("or").hidden = true;
+      $("heading").textContent = "Check your email";
+      $("sub").textContent = `We sent a link to ${data.email}. Open it to finish creating your account, then sign in.`;
+      return;
+    }
+    if (!r.ok && MODE === "login" && r.status === 403) {
+      show("err", await detail(r));
+      $("err").insertAdjacentHTML("beforeend", ` <button type="button" class="secondary small" id="resend">Send the link again</button>`);
+      $("resend").onclick = async () => {
+        const s = await post("api/auth/verify/send", LAST);
+        show(s.ok ? "ok" : "err", s.ok ? "Sent. Check your inbox (and spam)." : await detail(s));
+      };
+      $("submit").disabled = false;
+      return;
+    }
     if (r.ok) {
       if (MODE === "forgot") {
         $("form").reset();

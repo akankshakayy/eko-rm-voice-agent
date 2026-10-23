@@ -173,7 +173,9 @@ def conn() -> sqlite3.Connection:
                                      "state": "TEXT", "lho": "TEXT", "population": "TEXT", "terminal_status": "TEXT",
                                      "active": "INTEGER DEFAULT 1", "source": "TEXT", "import_id": "INTEGER",
                                      "updated_at": "REAL"}, demo_source=True)
-        _add_columns(_conn, "users", {"email_verified_at": "REAL", "password_changed_at": "REAL"})
+        _add_columns(_conn, "users", {"email_verified_at": "REAL", "password_changed_at": "REAL",
+                                      "google_sub": "TEXT",               # the Google account, for Sign in with Google
+                                      "must_verify": "INTEGER DEFAULT 0"})  # password signup not yet confirmed
         _add_columns(_conn, "sessions", {"last_seen_at": "REAL", "ip": "TEXT", "user_agent": "TEXT"})
     return _conn
 

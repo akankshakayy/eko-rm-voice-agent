@@ -38,29 +38,42 @@ With a key it uses an LLM:
 on the server, so no browser voice is needed. For listening, a Groq key enables Whisper speech-to-text so the
 mic works in any browser; without it the mic uses the browser's Web Speech API (Chrome or Edge only).
 
-**Login and roles.** Every page and API needs an account. Open http://localhost:8000 and click **Create an account**.
+**Login and roles.** Every page and API needs an account, and only Eko employees can have one. Sign in with
+**Google** (an Eko Google account), or with email and password.
 
 | Role | Can use |
 |---|---|
-| **Admin** | Everything, plus the **Users** page: approve signups, change roles, link RMs to profiles, remove accounts |
-| **Ops** | Call console, RM dashboard for all RMs, agent & model performance, simulator |
-| **RM** | RM dashboard for their own CSPs and tickets only |
-| **Pending** | Nothing; new signups wait here until an admin approves them |
+| **Admin** | Everything, plus the **Users** page: change roles, link RMs to profiles, remove accounts |
+| **Ops** | Call console, RM dashboard for all RMs, agent & model performance, recordings (new accounts start here) |
+| **RM** | RM dashboard, CSPs, tickets and recordings for their own CSPs only |
+| **No access** | Nothing: an admin can set this to take someone's access away |
 
-The **first account ever created becomes Admin**; everyone after that signs up as Pending. Roles are enforced on
-the server for every page and API call (RMs asking for another RM's data get a 404), and the UI hides what a role
-can't use. Ticket changes are recorded under the signed-in user's name.
+**No admin approval.** A new account works as soon as its email is proven to belong to the person: by Google
+(straight away) or by the confirmation link in an email (password accounts). Then it is Ops, or **RM** when the email is
+an RM's on the calling sheet (linked to that RM profile). The RM picked by a user is never trusted. Admins are the
+addresses in `ADMIN_EMAILS`; without it, the very first account becomes admin (fine on a laptop; set `ADMIN_EMAILS`
+on a server). Roles are enforced on the server for every page and API call (RMs asking for another RM's data get a
+404). Ticket changes are recorded under the signed-in user's name.
+
+**Sign in with Google**: in Google Cloud Console make an OAuth client (type *Web application*) with the redirect URI
+`<APP_BASE_URL>/api/auth/google/callback`, e.g. `https://indev.eko.in/rm-voice-agent/api/auth/google/callback`, then set
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `APP_BASE_URL`. Only verified addresses in `ALLOWED_EMAIL_DOMAINS` get in.
+**Without email (SMTP) set up**, password accounts can't be confirmed, so new accounts are made with Google only.
 
 Account security:
 - Only work emails can sign up (`ALLOWED_EMAIL_DOMAINS`, default `eko.co.in,ekosupport.in`).
 - Passwords: at least 10 characters, not a common password, not containing the user's name or email; hashed with scrypt.
-- 5 wrong passwords lock an email for 15 minutes (counted in the database, so a restart doesn't reset it).
+- 5 wrong passwords lock an email for 15 minutes, and 20 failed sign-ins lock the address they come from (counted
+  in the database, so a restart doesn't reset it). Signups and reset emails are limited per address too.
+- The login cookie is sent only to Sahayak's own path (taken from `APP_BASE_URL`, e.g. `/rm-voice-agent`), so other
+  apps on a shared host never receive it.
 - Logins last 7 days but end after 12 hours unused (`SESSION_IDLE_HOURS`); cookie is HttpOnly, stored hashed.
 - **Forgot password**: emails a one-time link valid for 30 minutes (max 3 an hour); using it signs the account out
   everywhere. Without email set up, an admin makes the link on the **Users** page and passes it on.
-- **Email linking**: new accounts get a confirmation link. When the confirmed email is the one the calling sheet
-  gives for an RM, the account is linked to that RM profile (an admin still approves it). The signup page no longer
-  shows RM names to the public.
+- **Email linking**: when a proven email (Google, or a confirmed link) is the one the calling sheet gives for an
+  RM, the account is linked to that RM profile and gets the RM role. The signup page shows no RM names.
+- A first Google sign-in to an account whose email was never confirmed removes that account's password and signs
+  it out everywhere, so nobody can prepare an account in someone else's name in advance.
 - **Account page** (click your name): change password (other devices are signed out), change email (only after the
   new address confirms), sign out everywhere, recent sign-in activity. Everything is logged in `auth_events`.
 - Emails need `SMTP_HOST`, `SMTP_FROM` and `APP_BASE_URL` (links are built from it, never from the request).

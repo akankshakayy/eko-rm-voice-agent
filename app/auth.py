@@ -35,7 +35,15 @@ DEFAULT_DOMAINS = "eko.co.in,ekosupport.in"
 _N, _R, _P = 2 ** 14, 8, 1
 
 ROLES = ("admin", "ops", "rm", "pending")
-ROLE_LABELS = {"admin": "Admin", "ops": "Ops", "rm": "RM", "pending": "Pending approval"}
+# "pending" is no longer given at signup; an admin can still set it to take someone's access away
+ROLE_LABELS = {"admin": "Admin", "ops": "Ops", "rm": "RM", "pending": "No access"}
+# New accounts start with this role, or RM when their verified email is an RM's on the calling sheet
+DEFAULT_ROLE = os.environ.get("DEFAULT_ROLE", "ops") if os.environ.get("DEFAULT_ROLE", "ops") in ("ops", "pending") else "ops"
+def allow_unverified() -> bool:
+    """Local testing only: password signups work without email, unconfirmed. Never on a shared server."""
+    return os.environ.get("ALLOW_UNVERIFIED_SIGNUP", "0") == "1"
+IP_FAILS, IP_FAIL_WINDOW = 20, 15 * 60          # failed sign-ins from one address before it has to wait
+IP_REQUESTS, IP_REQUEST_WINDOW = 10, 3600       # signups / reset emails from one address per hour
 
 # The most common passwords that pass the length rule; rejected outright
 COMMON = {"password12", "password123", "1234567890", "qwertyuiop", "iloveyou12", "eko@123456", "admin@1234",
@@ -55,7 +63,9 @@ def hash_password(password: str) -> str:
     return f"scrypt${_N}${_R}${_P}${salt.hex()}${dk.hex()}"
 
 
-def verify_password(password: str, stored: str) -> bool:
+def verify_password(password: str, stored: str | None) -> bool:
+    if not stored:                      # an account made with Google has no password
+        return False
     try:
         _, n, r, p, salt, dk = stored.split("$")
         got = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p),
@@ -123,28 +133,87 @@ def _user(user_id: int) -> dict | None:
     return db.q("SELECT * FROM users WHERE id=?", (user_id,), one=True)
 
 
+def admin_emails() -> set[str]:
+    """ADMIN_EMAILS: who becomes admin. Unset, the very first account does (fine on a laptop, not on a fresh server
+    anyone with a company address could reach first)."""
+    return {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+
+def _new_role(email: str) -> str:
+    admins = admin_emails()
+    if admins:
+        return "admin" if email in admins else DEFAULT_ROLE
+    return "admin" if not db.q("SELECT id FROM users LIMIT 1", one=True) else DEFAULT_ROLE
+
+
+def password_signup_open() -> bool:
+    """A password signup must prove the email is theirs by a confirmation email, so it needs email set up.
+    (The very first account, the admin who sets the server up, is the exception.)"""
+    return mailer.configured() or allow_unverified() or not db.q("SELECT id FROM users LIMIT 1", one=True)
+
+
+def _ip_busy(ip: str | None, events: tuple, limit: int, window: float) -> bool:
+    if not ip:
+        return False
+    marks = ",".join("?" * len(events))
+    n = db.q(f"SELECT COUNT(*) n FROM auth_events WHERE ip=? AND event IN ({marks}) AND ts>?",
+             (ip, *events, time.time() - window), one=True)["n"]
+    return n >= limit
+
+
 def signup(email: str, password: str, name: str, rm_id: int | None = None, ip: str | None = None) -> dict:
+    """A working account straight away, no admin approval: but a password account can be used only once its
+    email is confirmed (the link in the email), because a company address alone proves nothing.
+    rm_id is ignored: the RM profile is linked by a verified email, or by an admin."""
+    if _ip_busy(ip, ("signup",), IP_REQUESTS, IP_REQUEST_WINDOW):
+        raise AuthError("Too many new accounts from here. Try again in an hour.", 429)
     email = _clean_email(email)
     name = (name or "").strip()
     if not name or len(name) > 100:
         raise AuthError("Enter your name")
+    if not password_signup_open():
+        raise AuthError("Creating an account with a password needs email on this server, to confirm the address "
+                        "is yours. Use Sign in with Google, or ask an admin.", 403)
     check_password(password, email, name)
-    if rm_id is not None:
-        if not db.q("SELECT id FROM rms WHERE id=?", (rm_id,), one=True):
-            raise AuthError("Unknown RM profile")
-        if db.q("SELECT id FROM users WHERE rm_id=?", (rm_id,), one=True):
-            raise AuthError("That RM profile already has an account", 409)
     if db.q("SELECT id FROM users WHERE email=?", (email,), one=True):
-        raise AuthError("An account with this email already exists", 409)
+        raise AuthError("An account with this email already exists. Sign in, or reset the password.", 409)
     first = not db.q("SELECT id FROM users LIMIT 1", one=True)
-    role = "admin" if first else "pending"   # rm_id here is only a request until an admin approves it
+    must_verify = 0 if first or allow_unverified() else 1
     now = time.time()
-    uid = db.x("INSERT INTO users(email,name,password_hash,rm_id,role,created_at,password_changed_at)"
-               " VALUES(?,?,?,?,?,?,?)", (email, name, hash_password(password), rm_id, role, now, now))
+    uid = db.x("INSERT INTO users(email,name,password_hash,role,created_at,password_changed_at,must_verify)"
+               " VALUES(?,?,?,?,?,?,?)", (email, name, hash_password(password), _new_role(email), now, now,
+                                          must_verify))
     log_event("signup", uid, email, ip)
     u = _user(uid)
-    send_verification(u)
+    if must_verify:
+        send_verification(u)
     return u
+
+
+def google_sign_in(email: str, name: str, sub: str, ip: str | None = None) -> dict:
+    """Google has verified this address: find the account (by Google id, then email) or make one, ready to use."""
+    email = _clean_email(email)                       # company domains only, whatever Google says
+    now = time.time()
+    u = db.q("SELECT * FROM users WHERE google_sub=?", (sub,), one=True) or \
+        db.q("SELECT * FROM users WHERE email=?", (email,), one=True)
+    if u:
+        fields = {"last_login_at": now, "must_verify": 0}
+        if not u.get("google_sub"):
+            fields["google_sub"] = sub
+        if not u.get("email_verified_at"):
+            # Nobody had proven this address until now, so a password set on it may be someone else's (an account
+            # prepared in advance to take over the real owner's): drop that password and its sessions
+            fields.update(email_verified_at=now, password_hash=None)
+            _end_sessions(u["id"])
+            log_event("unverified_password_dropped", u["id"], email, ip, detail="first Google sign-in")
+        db.update("users", u["id"], **fields)
+        log_event("login", u["id"], email, ip, detail="google")
+        return _link_rm_by_email(_user(u["id"]))
+    uid = db.x("INSERT INTO users(email,name,role,created_at,last_login_at,email_verified_at,google_sub,must_verify)"
+               " VALUES(?,?,?,?,?,?,?,0)", (email, (name or email.split("@")[0])[:100], _new_role(email), now, now,
+                                            now, sub))
+    log_event("signup", uid, email, ip, detail="google")
+    return _link_rm_by_email(_user(uid))
 
 
 def set_role(actor: dict, user_id: int, role: str, rm_id: int | None) -> dict:
@@ -196,13 +265,17 @@ def _locked(email: str) -> bool:
 
 def login(email: str, password: str, ip: str | None = None) -> dict:
     email = (email or "").strip().lower()[:254]
-    if _locked(email):
+    if _locked(email) or _ip_busy(ip, ("login_failed",), IP_FAILS, IP_FAIL_WINDOW):
         log_event("login_locked", email=email, ip=ip)
         raise AuthError("Too many failed attempts. Try again in 15 minutes, or reset your password.", 429)
     u = db.q("SELECT * FROM users WHERE email=?", (email,), one=True)
-    if not verify_password(password or "", u["password_hash"] if u else _DUMMY_HASH) or not u:
+    if not verify_password(password or "", (u["password_hash"] or _DUMMY_HASH) if u else _DUMMY_HASH) or not u:
         log_event("login_failed", u["id"] if u else None, email, ip)
-        raise AuthError("Wrong email or password", 401)
+        hint = " This account uses Sign in with Google." if u and not u["password_hash"] else ""
+        raise AuthError("Wrong email or password." + hint, 401)
+    if u.get("must_verify") and not u.get("email_verified_at"):
+        # Only after the right password, so this can't be used to find out who has an account
+        raise AuthError(f"Confirm your email first: open the link we sent to {u['email']}.", 403)
     db.update("users", u["id"], last_login_at=time.time())
     log_event("login", u["id"], email, ip)
     return u
@@ -256,7 +329,8 @@ def request_password_reset(email: str, ip: str | None = None) -> bool:
     # Counted from the log: each new link replaces the previous unused one, so the tokens table can't tell
     recent = db.q("SELECT COUNT(*) n FROM auth_events WHERE user_id=? AND event='reset_sent' AND ts>?",
                   (u["id"], time.time() - 3600), one=True)["n"]
-    if recent >= MAX_RESETS_PER_HOUR or not mailer.configured():
+    if recent >= MAX_RESETS_PER_HOUR or not mailer.configured() or \
+            _ip_busy(ip, ("reset_sent",), IP_REQUESTS, IP_REQUEST_WINDOW):
         return False
     token = _new_link(u, "reset", u["email"], RESET_MINUTES * 60)
     log_event("reset_sent", u["id"], u["email"], ip)
@@ -291,6 +365,19 @@ def reset_password(token: str, new: str, ip: str | None = None) -> dict:
     if fields.get("email_verified_at"):
         _link_rm_by_email(_user(u["id"]))
     return _user(u["id"])
+
+
+def resend_confirmation(email: str, password: str, ip: str | None = None) -> bool:
+    """For someone who signed up but lost the confirmation email: the right password sends it again."""
+    if _ip_busy(ip, ("confirmation_resent",), IP_REQUESTS, IP_REQUEST_WINDOW):
+        raise AuthError("Too many requests from here. Try again in an hour.", 429)
+    u = db.q("SELECT * FROM users WHERE email=?", ((email or "").strip().lower()[:254],), one=True)
+    if not u or not verify_password(password or "", u["password_hash"]):
+        raise AuthError("Wrong email or password.", 401)
+    if u.get("email_verified_at"):
+        return False
+    log_event("confirmation_resent", u["id"], u["email"], ip)
+    return send_verification(u)
 
 
 def send_verification(u: dict, new_email: str | None = None) -> bool:
@@ -330,7 +417,7 @@ def verify_email(token: str, ip: str | None = None) -> dict:
             raise AuthError("Another account uses that email now", 409)
         log_event("email_changed", u["id"], row["email"], ip, detail=f"was {u['email']}")
         db.update("users", u["id"], email=row["email"])
-    db.update("users", u["id"], email_verified_at=time.time())
+    db.update("users", u["id"], email_verified_at=time.time(), must_verify=0)
     log_event("email_verified", u["id"], row["email"], ip)
     return _link_rm_by_email(_user(u["id"]))
 
@@ -342,7 +429,8 @@ def _link_rm_by_email(u: dict) -> dict:
     rm = db.q("""SELECT id, name FROM rms WHERE lower(email)=? AND id NOT IN
                  (SELECT rm_id FROM users WHERE rm_id IS NOT NULL)""", (u["email"].lower(),), one=True)
     if rm:
-        db.update("users", u["id"], rm_id=rm["id"])
+        # An RM's own email: they get the RM role for their CSPs, unless an admin gave them more already
+        db.update("users", u["id"], rm_id=rm["id"], role="rm" if u.get("role") == "ops" else u["role"])
         log_event("rm_linked", u["id"], u["email"], detail=f"RM {rm['name']} by verified email")
     return _user(u["id"])
 

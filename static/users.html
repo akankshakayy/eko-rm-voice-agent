@@ -45,10 +45,10 @@
   <section class="panel" style="margin-bottom:14px;--tone:var(--c5)">
     <h2>Roles</h2>
     <div class="roles">
-      <div><b>Admin</b><span class="muted">Everything, plus approving users and changing roles.</span></div>
+      <div><b>Admin</b><span class="muted">Everything, plus changing roles and removing accounts.</span></div>
       <div><b>Ops</b><span class="muted">Call console, RM dashboard for all RMs, performance dashboard.</span></div>
       <div><b>RM</b><span class="muted">RM dashboard for their own CSPs and tickets only.</span></div>
-      <div><b>Pending</b><span class="muted">New signup. No access until approved.</span></div>
+      <div><b>No access</b><span class="muted">Access taken away by an admin. New accounts no longer need approval: Eko emails start as Ops, RMs as RM.</span></div>
     </div>
   </section>
   <section class="panel">
@@ -74,7 +74,7 @@
 document.getElementById("nav").innerHTML = navHtml("users");
 const $ = id => document.getElementById(id);
 let RMS = [];
-const ROLE_OPTS = [["pending", "Pending"], ["rm", "RM"], ["ops", "Ops"], ["admin", "Admin"]];
+const ROLE_OPTS = [["pending", "No access"], ["rm", "RM"], ["ops", "Ops"], ["admin", "Admin"]];
 
 function row(u) {
   const self = ME && u.id === ME.id;
@@ -86,7 +86,7 @@ function row(u) {
     <select class="rm" aria-label="RM profile"><option value="">No RM profile</option>
       ${RMS.map(r => `<option value="${r.id}" ${u.rm_id === r.id ? "selected" : ""}>${esc(r.name)} · ${esc(r.region)}</option>`).join("")}</select>
     <div class="acts">
-      ${u.role === "pending" ? `<button class="approve">Approve</button>` : ""}
+      ${u.role === "pending" ? `<button class="approve">Give access</button>` : ""}
       <button class="secondary save">Save</button>
       ${self ? "" : `<button class="secondary resetlink" title="One-time link for this user to set a new password">Reset link</button>`}
       ${self ? "" : `<button class="danger remove">Remove</button>`}
@@ -97,7 +97,7 @@ function row(u) {
 
 async function load() {
   const users = await api("api/users");
-  $("count").textContent = `· ${users.length} total, ${users.filter(u => u.role === "pending").length} waiting for approval`;
+  $("count").textContent = `· ${users.length} total, ${users.filter(u => u.role === "pending").length} with no access`;
   $("list").innerHTML = users.map(row).join("") || `<p class="muted">No users yet.</p>`;
 }
 
