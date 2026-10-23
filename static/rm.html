@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RM Dashboard · Eko Sahayak</title>
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/common.css">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
 <script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
   .two { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
@@ -67,7 +67,7 @@
 <div class="drawer-bg" id="drawerBg"></div>
 <aside class="drawer" id="drawer"></aside>
 
-<script src="/static/common.js"></script>
+<script src="static/common.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let RM = null, TICKETS = [];
@@ -76,11 +76,11 @@ function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {
 
 (async () => {
   await loadConfig();
-  const [rms, me] = await Promise.all([api("/api/rms"), loadMe()]);
+  const [rms, me] = await Promise.all([api("api/rms"), loadMe()]);
   // Opens on the signed-in RM's own queue; remembers the last view per user
   RM = me.role === "rm" ? String(me.rm_id)   // RMs are locked to their own queue (server enforces it too)
     : localStorageGet(`rm_id:${me.id}`) ?? (me.rm_id ? String(me.rm_id) : "");
-  $("nav").innerHTML = navHtml("/rm") + `<div class="right"><span class="small muted">Viewing</span>
+  $("nav").innerHTML = navHtml("rm") + `<div class="right"><span class="small muted">Viewing</span>
     <select id="rmSel">${rms.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region)}</option>`).join("")}<option value="">All RMs</option></select>
     <span class="small muted" id="updated"></span></div>`;
   $("rmSel").value = RM;
@@ -97,9 +97,9 @@ const rmq = () => RM ? `rm_id=${RM}&` : "";
 
 async function refresh() {
   const [m, all, esc_] = await Promise.all([
-    api(`/api/metrics/agent?${rmq()}hours=168`),
-    api(`/api/tickets?${rmq()}limit=500`),
-    api(`/api/tickets?${rmq()}escalated=1&status=open,in_progress`),
+    api(`api/metrics/agent?${rmq()}hours=168`),
+    api(`api/tickets?${rmq()}limit=500`),
+    api(`api/tickets?${rmq()}escalated=1&status=open,in_progress`),
   ]);
   TICKETS = all;
   const now = Date.now() / 1000;
@@ -158,7 +158,7 @@ function renderTickets(e) {
 }
 
 async function openTicket(id) {
-  const t = await api(`/api/tickets/${id}`);
+  const t = await api(`api/tickets/${id}`);
   const catOpts = Object.entries(CONFIG.categories).map(([k, v]) => `<option value="${k}" ${(t.rm_category || t.category) === k ? "selected" : ""}>${esc(v.label)}</option>`).join("");
   $("drawer").innerHTML = `<div class="drawer-head"><div><h2 class="mono">${t.ticket_no}</h2><div class="sub">${esc(t.csp_name || "Unknown caller")} · ${esc(catLabel(t.category))}</div></div><button class="secondary" onclick="closeDrawer()">Close</button></div>
     <div style="margin:8px 0 14px">${prBadge(t.priority)} ${badge(STATUS, t.status)} ${t.escalated ? '<span class="badge b-warn">Escalated</span>' : ""}</div>
@@ -189,7 +189,7 @@ async function openTicket(id) {
 }
 function closeDrawer() { $("drawer").classList.remove("open"); $("drawerBg").classList.remove("open"); }
 async function saveTicket(id) {
-  await api(`/api/tickets/${id}`, { method: "PATCH", body: { status: $("dStatus").value, rm_category: $("dCat").value, note: $("dNote").value || null } });
+  await api(`api/tickets/${id}`, { method: "PATCH", body: { status: $("dStatus").value, rm_category: $("dCat").value, note: $("dNote").value || null } });
   await openTicket(id); refresh();
 }
 </script>

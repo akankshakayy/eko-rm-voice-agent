@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Users · Eko Sahayak</title>
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/common.css">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
 <script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
   .roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -69,9 +69,9 @@
     <div class="ulist" id="tokens"><p class="muted">Loading…</p></div>
   </section>
 </main>
-<script src="/static/common.js"></script>
+<script src="static/common.js"></script>
 <script>
-document.getElementById("nav").innerHTML = navHtml("/users");
+document.getElementById("nav").innerHTML = navHtml("users");
 const $ = id => document.getElementById(id);
 let RMS = [];
 const ROLE_OPTS = [["pending", "Pending"], ["rm", "RM"], ["ops", "Ops"], ["admin", "Admin"]];
@@ -95,7 +95,7 @@ function row(u) {
 }
 
 async function load() {
-  const users = await api("/api/users");
+  const users = await api("api/users");
   $("count").textContent = `· ${users.length} total, ${users.filter(u => u.role === "pending").length} waiting for approval`;
   $("list").innerHTML = users.map(row).join("") || `<p class="muted">No users yet.</p>`;
 }
@@ -105,7 +105,7 @@ async function save(el, role) {
   const rm = el.querySelector(".rm").value;
   msg.className = "msg"; msg.textContent = "Saving…";
   try {
-    await api(`/api/users/${el.dataset.id}`, { method: "PATCH", body: { role, rm_id: rm ? Number(rm) : null } });
+    await api(`api/users/${el.dataset.id}`, { method: "PATCH", body: { role, rm_id: rm ? Number(rm) : null } });
     await load();
   } catch (e) {
     msg.className = "msg err";
@@ -123,7 +123,7 @@ $("list").onclick = async e => {
   if (e.target.classList.contains("remove")) {
     const name = el.querySelector(".who b").textContent;
     if (!confirm(`Remove ${name}? They will be signed out and their account deleted.`)) return;
-    try { await api(`/api/users/${el.dataset.id}`, { method: "DELETE" }); await load(); }
+    try { await api(`api/users/${el.dataset.id}`, { method: "DELETE" }); await load(); }
     catch (err) { el.querySelector(".msg").className = "msg err"; el.querySelector(".msg").textContent = err.message; }
   }
 };
@@ -139,14 +139,14 @@ function tokRow(t) {
 }
 
 async function loadTokens() {
-  const toks = await api("/api/uploader/tokens");
+  const toks = await api("api/uploader/tokens");
   $("tokcount").textContent = `· ${toks.filter(t => !t.revoked_at).length} active`;
   $("tokens").innerHTML = toks.map(tokRow).join("") || `<p class="muted">No phones set up yet.</p>`;
 }
 
 $("tokcreate").onclick = async () => {
   try {
-    const t = await api("/api/uploader/tokens", { method: "POST", body: { rm_id: Number($("tokrm").value), label: $("toklabel").value } });
+    const t = await api("api/uploader/tokens", { method: "POST", body: { rm_id: Number($("tokrm").value), label: $("toklabel").value } });
     $("newtok").innerHTML = `<div class="newtok"><b>Token for ${esc(t.rm_name)}</b> · paste it into the app on their phone. It is shown only now.
       <code>${esc(t.token)}</code><button class="secondary" id="tokcopy">Copy</button></div>`;
     $("tokcopy").onclick = () => navigator.clipboard?.writeText(t.token).then(() => toast("Token copied"));
@@ -159,13 +159,13 @@ $("tokens").onclick = async e => {
   const el = e.target.closest(".trow");
   if (!el || !e.target.classList.contains("revoke")) return;
   if (!confirm("Revoke this token? That phone will stop uploading until it gets a new one.")) return;
-  await api(`/api/uploader/tokens/${el.dataset.id}`, { method: "DELETE" });
+  await api(`api/uploader/tokens/${el.dataset.id}`, { method: "DELETE" });
   await loadTokens();
 };
 
 (async () => {
   await loadMe();
-  RMS = await api("/api/rms");
+  RMS = await api("api/rms");
   $("origin").textContent = location.origin;
   $("tokrm").innerHTML = RMS.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region)}</option>`).join("");
   await load();

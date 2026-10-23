@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS recordings (      -- real RM-CSP call recordings from
     intent TEXT, intent_confidence REAL, slots_json TEXT, sentiment TEXT, resolution TEXT,
     rm_handling TEXT, summary TEXT, model TEXT
 );
+CREATE TABLE IF NOT EXISTS api_keys (         -- other systems calling the API (app/integrations.py)
+    id INTEGER PRIMARY KEY, key_hash TEXT UNIQUE, name TEXT, role TEXT, created_by TEXT,
+    created_at REAL, last_used_at REAL, revoked_at REAL
+);
+CREATE TABLE IF NOT EXISTS webhooks (         -- other systems told about events (app/integrations.py)
+    id INTEGER PRIMARY KEY, url TEXT, events TEXT, secret TEXT, active INTEGER DEFAULT 1, created_by TEXT, created_at REAL
+);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (   -- outbox: one row per event per webhook
+    id INTEGER PRIMARY KEY, webhook_id INTEGER, event TEXT, payload TEXT,
+    status TEXT,               -- pending | delivered | failed
+    attempts INTEGER DEFAULT 0, next_attempt_at REAL, last_status_code INTEGER, last_error TEXT,
+    created_at REAL, delivered_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_deliveries_due ON webhook_deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status, uploaded_at);
 CREATE INDEX IF NOT EXISTS idx_calls_started ON calls(started_at);
 CREATE INDEX IF NOT EXISTS idx_turns_call ON turns(call_id);
@@ -97,6 +111,14 @@ def conn() -> sqlite3.Connection:
             _conn.commit()
         if "model" not in {r[1] for r in _conn.execute("PRAGMA table_info(turns)")}:
             _conn.execute("ALTER TABLE turns ADD COLUMN model TEXT")   # which LLM answered this turn
+            _conn.commit()
+        if "next_try_at" not in {r[1] for r in _conn.execute("PRAGMA table_info(recordings)")}:
+            _conn.execute("ALTER TABLE recordings ADD COLUMN next_try_at REAL")   # when a failed one is retried
+            _conn.commit()
+        if "simulated" not in {r[1] for r in _conn.execute("PRAGMA table_info(calls)")}:
+            # Simulated calls send no webhook events. Every call so far was a demo or a console test
+            _conn.execute("ALTER TABLE calls ADD COLUMN simulated INTEGER DEFAULT 0")
+            _conn.execute("UPDATE calls SET simulated=1")
             _conn.commit()
         if "role" not in {r[1] for r in _conn.execute("PRAGMA table_info(users)")}:
             # Accounts made before roles existed: the first becomes admin, RM-linked ones RMs, the rest ops

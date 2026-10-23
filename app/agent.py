@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 
-from . import db, i18n
+from . import db, i18n, integrations
 from .seed import csp_by_phone
 from .rules_engine import RulesEngine
 from .taxonomy import (CATEGORIES, HUMAN_REQUEST, ANGER, STT_CONFIDENCE_MIN, INTENT_CONFIDENCE_MIN,
@@ -233,6 +233,7 @@ def hangup(call_id, ts=None):
     else:
         db.update("calls", call_id, status="ended", outcome="dropped", ended_at=ts,
                   duration_sec=round(ts - call["started_at"], 1))
+        integrations.call_ended(call_id)
     return public_call(call_id)
 
 
@@ -292,6 +293,9 @@ def _finish(call, ts, action, reply, d, outcome=None):
     db.update("calls", call["id"], status="ended", outcome=outcome, ended_at=ts,
               duration_sec=round(ts - call["started_at"], 1), ticket_id=ticket["id"] if ticket else None,
               escalation_reason=d.get("escalation_reason"), sentiment=d.get("sentiment") or call.get("sentiment"))
+    if ticket:
+        integrations.ticket_created(ticket["id"])
+    integrations.call_ended(call["id"])
     return {"call_id": call["id"], "reply": reply, "ended": True, "outcome": outcome, "ticket": ticket,
             "call": public_call(call["id"])}
 
@@ -345,7 +349,9 @@ def update_ticket(ticket_id, actor="rm", status=None, rm_category=None, note=Non
     if not t:
         raise KeyError(ticket_id)
     fields = {"updated_at": ts}
+    changes = []
     if status and status != t["status"]:
+        changes.append("status")
         fields["status"] = status
         if status in ("resolved", "closed") and not t["closed_at"]:
             fields["closed_at"] = ts
@@ -354,13 +360,16 @@ def update_ticket(ticket_id, actor="rm", status=None, rm_category=None, note=Non
         db.x("INSERT INTO ticket_events(ticket_id,ts,actor,action,note) VALUES(?,?,?,?,?)",
              (ticket_id, ts, actor, f"status:{status}", None))
     if rm_category and rm_category != t["rm_category"]:
+        changes.append("rm_category")
         fields["rm_category"] = rm_category
         db.x("INSERT INTO ticket_events(ticket_id,ts,actor,action,note) VALUES(?,?,?,?,?)",
              (ticket_id, ts, actor, "category_confirmed", f"{t['category']} -> {rm_category}"))
     if note:
+        changes.append("note")
         db.x("INSERT INTO ticket_events(ticket_id,ts,actor,action,note) VALUES(?,?,?,?,?)",
              (ticket_id, ts, actor, "note", note))
     db.update("tickets", ticket_id, **fields)
+    integrations.ticket_updated(ticket_id, changes, actor)
     return db.q("SELECT * FROM tickets WHERE id=?", (ticket_id,), one=True)
 
 

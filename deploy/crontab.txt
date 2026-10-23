@@ -1,0 +1,3 @@
+# Eko Sahayak: start at boot, and restart within 5 minutes if it stops (deploy/start.sh)
+@reboot $HOME/eko-rm-voice-agent/deploy/start.sh
+*/5 * * * * $HOME/eko-rm-voice-agent/deploy/start.sh

@@ -1,4 +1,5 @@
 import json
+import time
 import os
 import tempfile
 
@@ -260,7 +261,7 @@ def test_everything_requires_login():
     assert c.get("/api/tickets").status_code == 401
     assert c.post("/api/calls", json={"phone": "9000000101"}).status_code == 401
     r = c.get("/rm", follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/login?next=/rm"
+    assert r.status_code == 303 and r.headers["location"] == "login?next=rm"
     assert c.get("/login").status_code == 200 and c.get("/static/common.css").status_code == 200
 
 
@@ -333,7 +334,7 @@ def test_first_account_is_admin_and_new_signups_wait_for_approval():
     assert pending.get("/api/auth/me").json()["role"] == "pending"
     assert pending.get("/api/tickets").status_code == 403
     r = pending.get("/rm", follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/pending"
+    assert r.status_code == 303 and r.headers["location"] == "pending"
     assert pending.get("/pending").status_code == 200
 
 
@@ -359,7 +360,7 @@ def test_rm_only_sees_and_changes_their_own_tickets():
     assert rm2.get("/api/metrics/model").status_code == 403
     assert rm2.get("/api/users").status_code == 403
     r = rm2.get("/call", follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/?denied=1"
+    assert r.status_code == 303 and r.headers["location"] == "./?denied=1"
     assert rm2.get("/rm").status_code == 200
 
 
@@ -372,7 +373,7 @@ def test_ops_has_everything_except_user_management():
     assert ops.get("/api/tickets").status_code == 200
     assert ops.get("/api/users").status_code == 403
     assert ops.patch(f"/api/users/{uid}", json={"role": "admin"}).status_code == 403   # can't promote yourself
-    assert ops.get("/users", follow_redirects=False).headers["location"] == "/?denied=1"
+    assert ops.get("/users", follow_redirects=False).headers["location"] == "./?denied=1"
 
 
 def test_admin_guards():
@@ -646,19 +647,32 @@ def test_failing_recording_gives_up_after_three_runs(monkeypatch):
         raise ValueError("bad audio")
     _fake_pipeline(monkeypatch, SEGS)
     monkeypatch.setattr(recordings, "_compact", broken)
-    for _ in range(3):
-        recordings.process_pending()
+    now = time.time()
+    recordings.process_pending(now=now)
+    assert recordings.process_pending(now=now + 60)["processed"] == 0          # waits before retrying
+    assert recordings.get_recording(1)["attempts"] == 1
+    recordings.process_pending(now=now + 11 * 60)                              # 10 min later: 2nd try
+    recordings.process_pending(now=now + 40 * 60)                              # 20 min after that: 3rd
     r = recordings.get_recording(1)
     assert r["status"] == "failed" and r["attempts"] == 3 and "bad audio" in r["error"]
 
 
-def test_processing_runs_once_a_day_after_the_set_time():
+def test_daily_mode_runs_once_a_day_after_the_set_time():
     from datetime import datetime
     from app.recordings import due
-    assert not due(datetime(2026, 10, 21, 20, 59), None)
-    assert due(datetime(2026, 10, 21, 21, 0), None)
-    assert not due(datetime(2026, 10, 21, 23, 0), "2026-10-21")
-    assert due(datetime(2026, 10, 22, 21, 30), "2026-10-21")
+    assert not due(datetime(2026, 10, 21, 20, 59), None, "21:00")
+    assert due(datetime(2026, 10, 21, 21, 0), None, "21:00")
+    assert not due(datetime(2026, 10, 21, 23, 0), "2026-10-21", "21:00")
+    assert due(datetime(2026, 10, 22, 21, 30), "2026-10-21", "21:00")
+
+
+def test_each_upload_wakes_processing_straight_away():
+    from app import recordings
+    assert recordings.DAILY_AT == ""                                           # default: no waiting for 9 pm
+    admin = _client()
+    recordings._arrived.clear()
+    _upload(admin, _admin_token(admin))
+    assert recordings._arrived.is_set()
 
 
 def test_export_cuts_the_csp_complaint_into_a_draft_case(monkeypatch, tmp_path):
@@ -682,3 +696,125 @@ def test_export_cuts_the_csp_complaint_into_a_draft_case(monkeypatch, tmp_path):
     assert row["id"] == "rec1" and row["audio"] == "rec1.ogg" and row["expected_intent"] == "dmt_failed"
     assert row["reference_text"] == "" and "DMT 5000" in row["notes"]
     assert (tmp_path / "rec1.ogg").stat().st_size > 0
+
+
+# ---------------------------------------------------------------- integrations: API keys and webhooks
+def _service(key):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    return TestClient(app, headers={"Authorization": f"Bearer {key}"})
+
+
+def test_service_api_key_acts_as_ops_without_a_login():
+    admin = _client()
+    key = admin.post("/api/integrations/keys", json={"name": "Eko CRM"}).json()["key"]
+    crm = _service(key)
+    r = crm.post("/api/calls", json={"direction": "inbound", "phone": "9000000101"}).json()
+    tid = crm.post(f"/api/calls/{r['call_id']}/turn", json={"text": "Mujhe RM se baat karni hai"}).json()["ticket"]["id"]
+    assert crm.patch(f"/api/tickets/{tid}", json={"status": "closed"}).status_code == 200
+    events = crm.get(f"/api/tickets/{tid}").json()["events"]
+    assert events[-1]["actor"] == "Eko CRM (API)"                      # audit trail names the system
+    assert crm.get("/openapi.json").status_code == 200                 # machine-readable API description
+    assert crm.get("/api/users").status_code == 403                    # never admin
+    assert crm.post("/api/integrations/keys", json={"name": "x"}).status_code == 403
+    assert _service("ekosk_wrong").get("/api/tickets").status_code == 401
+    kid = admin.get("/api/integrations/keys").json()[0]["id"]
+    admin.delete(f"/api/integrations/keys/{kid}")
+    assert crm.get("/api/tickets").status_code == 401                  # revoked
+
+
+def _sent():
+    calls = []
+
+    def send(url, body, headers):
+        calls.append((url, json.loads(body), headers, body))
+        return 200
+    return calls, send
+
+
+def test_webhook_gets_signed_ticket_and_call_events():
+    from app import integrations
+    admin = _client()
+    hook = admin.post("/api/integrations/webhooks", json={"url": "https://crm.example/hook",
+                                                          "events": ["ticket.created", "call.ended"]}).json()
+    talk([("Mujhe RM se baat karni hai", .9)])
+    calls, send = _sent()
+    assert integrations.deliver_pending(send)["delivered"] == 2
+    by_event = {c[1]["event"]: c for c in calls}
+    url, payload, headers, body = by_event["ticket.created"]
+    t = payload["data"]
+    assert url == "https://crm.example/hook" and t["escalated"] is True and t["csp"]["code"] == "CSP10231"
+    assert t["rm"] == {"id": 1, "name": "Rahul Verma"}
+    assert headers["X-Sahayak-Signature"] == integrations.sign(hook["secret"], headers["X-Sahayak-Timestamp"], body)
+    assert by_event["call.ended"][1]["data"]["transcript"]
+    assert integrations.deliver_pending(send)["due"] == 0              # each event sent once
+
+
+def test_ticket_updates_send_what_changed_and_who_changed_it():
+    from app import agent, integrations
+    _client().post("/api/integrations/webhooks", json={"url": "https://crm.example/hook", "events": ["ticket.updated"]})
+    tid = talk([("Mujhe RM se baat karni hai", .9)])["ticket"]["id"]
+    agent.update_ticket(tid, "Rahul Verma", status="in_progress", note="Called the bank")
+    calls, send = _sent()
+    integrations.deliver_pending(send)
+    data = calls[0][1]["data"]
+    assert data["changes"] == ["status", "note"] and data["changed_by"] == "Rahul Verma"
+
+
+def test_failed_webhook_retries_with_backoff_then_gives_up():
+    from app import integrations
+    _client().post("/api/integrations/webhooks", json={"url": "https://down.example/hook"})
+    talk([("Mujhe RM se baat karni hai", .9)])
+    now = time.time()
+    res = integrations.deliver_pending(lambda *a: 503, now=now)
+    assert res["delivered"] == 0 and res["gave_up"] == 0
+    assert integrations.deliver_pending(lambda *a: 200, now=now + 5)["due"] == 0        # waits before retrying
+    t = now
+    for wait in integrations.RETRY_AFTER:
+        t += wait + 1
+        integrations.deliver_pending(lambda *a: 503, now=t)
+    assert {d["status"] for d in integrations.list_deliveries()} == {"failed"}
+
+
+def test_simulated_calls_send_no_events():
+    from app import integrations
+    from app.simulator import run_backfill
+    _client().post("/api/integrations/webhooks", json={"url": "https://crm.example/hook"})
+    run_backfill(5, days=0)
+    assert integrations.list_deliveries() == []
+
+
+def test_recording_processed_event(monkeypatch):
+    from app import integrations, recordings
+    admin = _client()
+    admin.post("/api/integrations/webhooks", json={"url": "https://data.example/hook", "events": ["recording.processed"]})
+    _upload(admin, _admin_token(admin))
+    _fake_pipeline(monkeypatch, SEGS, REVIEW)
+    recordings.process_pending()
+    calls, send = _sent()
+    integrations.deliver_pending(send)
+    data = calls[0][1]["data"]
+    assert data["intent"] == "dmt_failed" and [s["speaker"] for s in data["transcript"]] == ["rm", "csp", "rm"]
+    assert "file_path" not in data
+
+
+def test_webhook_validation():
+    admin = _client()
+    assert admin.post("/api/integrations/webhooks", json={"url": "ftp://x"}).status_code == 400
+    assert admin.post("/api/integrations/webhooks", json={"url": "https://x.example", "events": ["nope"]}).status_code == 400
+
+
+def test_pages_work_under_an_address_prefix():
+    """Sahayak runs at https://indev.eko.in/rm-voice-agent: every link, API call and redirect must be relative."""
+    import glob
+    import re
+    from urllib.parse import urljoin
+    for f in glob.glob("static/*.html") + ["static/common.js"]:
+        text = open(f, encoding="utf-8").read()
+        bad = re.findall(r"""["'`(]/(?:api|static|login|signup|rm|ops|call|users|pending|favicon)\b""", text)
+        assert not bad, f"{f} has absolute paths that break under a prefix: {bad[:3]}"
+    c = _client(signed_in=False)
+    loc = c.get("/rm", follow_redirects=False).headers["location"]
+    assert urljoin("https://indev.eko.in/rm-voice-agent/rm", loc) == "https://indev.eko.in/rm-voice-agent/login?next=rm"
+    loc = c.get("/", follow_redirects=False).headers["location"]
+    assert urljoin("https://indev.eko.in/rm-voice-agent/", loc).startswith("https://indev.eko.in/rm-voice-agent/login")

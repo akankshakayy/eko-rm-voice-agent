@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Performance · Eko Sahayak</title>
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/common.css">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
 <script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
-<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="static/vendor/chart.umd.min.js"></script>
 <style>
   .g3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
   .g2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -58,7 +58,7 @@
 <div class="drawer-bg" id="drawerBg"></div>
 <aside class="drawer" id="drawer"></aside>
 
-<script src="/static/common.js"></script>
+<script src="static/common.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let HOURS = 168, charts = {}, LIVE = [];
@@ -66,12 +66,12 @@ const OUT_COLORS = { ticket_raised: "--c1", resolved_by_agent: "--c2", escalated
 
 (async () => {
   await loadConfig(); chartDefaults();
-  $("nav").innerHTML = navHtml("/ops") + `<div class="right">
+  $("nav").innerHTML = navHtml("ops") + `<div class="right">
     <select id="range"><option value="24">Last 24 hours</option><option value="168" selected>Last 7 days</option><option value="720">Last 30 days</option></select>
     <button class="secondary" id="simBtn" title="Plays simulated CSP calls in real time using the free rules engine">▶ Simulate 5 live calls</button>
     <span class="small muted" id="updated"></span></div>`;
   $("range").onchange = e => { HOURS = +e.target.value; refresh(); };
-  $("simBtn").onclick = async () => { $("simBtn").disabled = true; await api("/api/simulate", { method: "POST", body: { calls: 5, live: true } }); setTimeout(() => $("simBtn").disabled = false, 8000); };
+  $("simBtn").onclick = async () => { $("simBtn").disabled = true; await api("api/simulate", { method: "POST", body: { calls: 5, live: true } }); setTimeout(() => $("simBtn").disabled = false, 8000); };
   $("drawerBg").onclick = closeDrawer;
   $("engineTag").textContent = `Engine: ${CONFIG.engine !== "rules" ? CONFIG.engine_label + " · " + CONFIG.model : "rules fallback (set GROQ_API_KEY for a free LLM)"}`;
   refresh(); setInterval(refresh, 4000); setInterval(tickLive, 1000);
@@ -84,7 +84,7 @@ function chart(id, cfg) { if (charts[id]) { charts[id].data = cfg.data; charts[i
 const noGrid = { grid: { display: false } };
 
 async function refresh() {
-  const [a, m] = await Promise.all([api(`/api/metrics/agent?hours=${HOURS}`), api(`/api/metrics/model?hours=${HOURS}`)]);
+  const [a, m] = await Promise.all([api(`api/metrics/agent?hours=${HOURS}`), api(`api/metrics/model?hours=${HOURS}`)]);
   const T = a.totals;
   kpis("agentKpis", [
     ["Total calls", num(T.calls), `${T.inbound} in · ${T.outbound} out`],
@@ -164,7 +164,7 @@ function tickLive() {
 }
 
 async function openCall(id) {
-  const c = await api(`/api/calls/${id}`);
+  const c = await api(`api/calls/${id}`);
   $("drawer").innerHTML = `<div class="drawer-head"><div><h2>Call #${c.id}</h2><div class="sub">${esc(c.csp_name || "Unknown caller")} · ${fmtTime(c.started_at)}</div></div><button class="secondary" onclick="closeDrawer()">Close</button></div>
     <dl class="kv">
       <dt>CSP</dt><dd>${esc(c.csp_name || "Unknown")} ${c.csp_code ? `(${c.csp_code})` : ""}</dd><dt>RM</dt><dd>${esc(c.rm_name || "–")}</dd>

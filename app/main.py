@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from . import agent, auth, db, metrics, recordings, stt, tts  # noqa: E402
+from . import agent, auth, db, integrations, metrics, recordings, stt, tts  # noqa: E402
 from .seed import seed  # noqa: E402
 from .taxonomy import CATEGORIES, SLOT_LABELS, STT_CONFIDENCE_MIN, INTENT_CONFIDENCE_MIN, MAX_MISUNDERSTOOD  # noqa
 
@@ -41,9 +41,12 @@ def _reap_stale_calls(stop: threading.Event):
 async def lifespan(_app):
     stop = threading.Event()
     threading.Thread(target=_reap_stale_calls, args=(stop,), daemon=True, name="call-reaper").start()
-    threading.Thread(target=recordings.daily_loop, args=(stop,), daemon=True, name="recordings-daily").start()
+    threading.Thread(target=recordings.processing_loop, args=(stop,), daemon=True, name="recordings").start()
+    threading.Thread(target=integrations.delivery_loop, args=(stop,), daemon=True, name="webhooks").start()
     yield
     stop.set()
+    integrations.wake()
+    recordings.wake()
 
 
 app = FastAPI(title="Eko RM Voice Agent", version="0.1.0", lifespan=lifespan)
@@ -60,6 +63,8 @@ PAGE_ROLES = {"/": ("admin", "ops", "rm"), "/call": STAFF, "/ops": STAFF, "/rm":
 PENDING_OK = {"/pending", "/api/auth/me", "/api/auth/logout"}   # all a not-yet-approved account can reach
 
 
+# Redirects and page links are relative ("login", "static/..."), so Sahayak works at the top of an address
+# (localhost:8000) and under a prefix (https://indev.eko.in/rm-voice-agent) alike. Every page is one level deep.
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     """Every page and API needs a signed-in user, except the login/signup pages and static files.
@@ -67,21 +72,29 @@ async def require_login(request: Request, call_next):
     path = request.url.path
     if path in PUBLIC_PATHS or path in DEVICE_PATHS or path.startswith(PUBLIC_PREFIXES):
         return await call_next(request)
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer ") and (path.startswith("/api/") or path == "/openapi.json"):
+        # Another system using a service API key (app/integrations.py): acts as Ops, no cookie involved
+        service = integrations.service_for_key(header[7:].strip())
+        if not service:
+            return JSONResponse({"detail": "API key is wrong or revoked"}, status_code=401)
+        request.state.user = service
+        return await call_next(request)
     user = auth.user_for_token(request.cookies.get(auth.COOKIE))
     if not user:
         if path.startswith("/api/"):
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
-        nxt = path if path in PAGE_ROLES else "/"
-        return RedirectResponse(f"/login?next={nxt}", status_code=303)
+        nxt = path.lstrip("/") if path in PAGE_ROLES and path != "/" else "./"
+        return RedirectResponse(f"login?next={nxt}", status_code=303)
     role = user.get("role") or "pending"
     if role == "pending" and path not in PENDING_OK:
         if path.startswith("/api/"):
             return JSONResponse({"detail": "Your account is waiting for admin approval"}, status_code=403)
-        return RedirectResponse("/pending", status_code=303)
+        return RedirectResponse("pending", status_code=303)
     if role != "pending" and path == "/pending":
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse("./", status_code=303)
     if path in PAGE_ROLES and role not in PAGE_ROLES[path]:
-        return RedirectResponse("/?denied=1", status_code=303)
+        return RedirectResponse("./?denied=1", status_code=303)
     request.state.user = user
     return await call_next(request)
 
@@ -476,6 +489,72 @@ def process_recordings():
     """Run the daily processing now instead of waiting for RECORDINGS_DAILY_AT."""
     threading.Thread(target=recordings.process_pending, daemon=True, name="recordings-now").start()
     return {"started": True, "waiting": recordings.summary_counts().get("new", 0)}
+
+
+# ------------------------------------------------------------------ integrations (app/integrations.py, INTEGRATION.md)
+class KeyBody(BaseModel):
+    name: str
+
+
+class WebhookBody(BaseModel):
+    url: str
+    events: list[str] = ["*"]
+
+
+def _who(actor: dict) -> str:
+    return actor.get("name") or actor.get("email") or ""
+
+
+@app.get("/api/integrations/keys", dependencies=[Depends(allow("admin"))])
+def api_keys():
+    return integrations.list_keys()
+
+
+@app.post("/api/integrations/keys")
+def new_api_key(body: KeyBody, actor=Depends(allow("admin"))):
+    try:
+        return integrations.create_key(body.name, _who(actor))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/integrations/keys/{key_id}", dependencies=[Depends(allow("admin"))])
+def revoke_api_key(key_id: int):
+    if not integrations.revoke_key(key_id):
+        raise HTTPException(404, "No active key with that id")
+    return {"ok": True}
+
+
+@app.get("/api/integrations/webhooks", dependencies=[Depends(allow("admin"))])
+def webhooks():
+    return {"events": integrations.EVENTS, "webhooks": integrations.list_webhooks()}
+
+
+@app.post("/api/integrations/webhooks")
+def new_webhook(body: WebhookBody, actor=Depends(allow("admin"))):
+    try:
+        return integrations.create_webhook(body.url, body.events, _who(actor))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/integrations/webhooks/{hook_id}", dependencies=[Depends(allow("admin"))])
+def remove_webhook(hook_id: int):
+    if not integrations.remove_webhook(hook_id):
+        raise HTTPException(404, "No active webhook with that id")
+    return {"ok": True}
+
+
+@app.post("/api/integrations/webhooks/{hook_id}/test", dependencies=[Depends(allow("admin"))])
+def test_webhook(hook_id: int):
+    if not integrations.send_test(hook_id):
+        raise HTTPException(404, "No active webhook with that id")
+    return {"queued": True}
+
+
+@app.get("/api/integrations/deliveries", dependencies=[Depends(allow("admin"))])
+def deliveries(webhook_id: int | None = None, limit: int = 100):
+    return integrations.list_deliveries(webhook_id, limit)
 
 
 # ------------------------------------------------------------------ simulator

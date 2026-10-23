@@ -117,6 +117,7 @@ def play_call(ts=None, pace=None, engine="rules"):
 
     res = agent.start_call(direction, csp["phone"], extra.get("purpose", "support"), ts=clock[0])
     cid = res["call_id"]
+    db.update("calls", cid, simulated=1)        # demo data: no webhook events
     used = set()
     utter, conf = opener, round(R.uniform(0.72, 0.97), 2)
     if extra.get("garbled"):

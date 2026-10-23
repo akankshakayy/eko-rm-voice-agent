@@ -120,6 +120,7 @@ class MainActivity : Activity() {
         s.ekoAccountIds = sim.accountIds
         s.wifiOnly = wifiOnly.isChecked
         UploadWorker.scheduleDaily(this)
+        UploadWorker.watchCalls(this)
         toast("Saved. Recordings upload every day at about 8 pm.")
         showStatus()
     }

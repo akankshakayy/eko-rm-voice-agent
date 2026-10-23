@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.CallLog
 import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -92,13 +93,18 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
         if (retry) failed++
         s.watermarkMs = watermark
         s.pruneHandled()
-        return finish(if (retry) Result.retry() else Result.success())
+        // blocked = a recording still being written, or its call not in the call log yet: look again shortly
+        return finish(if (retry || blocked) Result.retry() else Result.success())
     }
 
     companion object {
         const val TAG = "RecSync"
         private const val DAILY = "daily-upload"
         private const val NOW = "upload-now"
+        private const val WATCH = "watch-calls"
+        private const val AFTER_CALL = "after-call-upload"
+        /** Wait this long after a call ends: the dialer needs a moment to finish saving the recording. */
+        private const val AFTER_CALL_DELAY_MIN = 3L
         private const val STILL_WRITING_MS = 2 * 60 * 1000L
         private const val CALL_LOG_LAG_MS = 15 * 60 * 1000L
         private val RUN_AT: LocalTime = LocalTime.of(20, 0)
@@ -119,6 +125,27 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(DAILY, ExistingPeriodicWorkPolicy.UPDATE, req)
         }
 
+        /**
+         * Upload a few minutes after every call. Android wakes [CallWatchWorker] when the call log changes
+         * (a call ended), and it queues one upload. Calls close together share one upload; the daily run
+         * stays as a safety net. Call this after setup and from [CallWatchWorker] to keep watching.
+         */
+        fun watchCalls(context: Context) {
+            val req = OneTimeWorkRequestBuilder<CallWatchWorker>()
+                .setConstraints(Constraints.Builder().addContentUriTrigger(CallLog.Calls.CONTENT_URI, true).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(WATCH, ExistingWorkPolicy.REPLACE, req)
+        }
+
+        fun uploadAfterCall(context: Context) {
+            val req = OneTimeWorkRequestBuilder<UploadWorker>()
+                .setInitialDelay(AFTER_CALL_DELAY_MIN, TimeUnit.MINUTES)
+                .setConstraints(constraints(Settings(context)))
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 2, TimeUnit.MINUTES)
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(AFTER_CALL, ExistingWorkPolicy.REPLACE, req)
+        }
+
         fun runNow(context: Context) {
             val req = OneTimeWorkRequestBuilder<UploadWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -132,5 +159,15 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
             if (!next.isAfter(now)) next = next.plusDays(1)
             return Duration.between(now, next)
         }
+    }
+}
+
+
+/** Woken by Android when the call log changes, i.e. a call just ended. Queues an upload and keeps watching. */
+class CallWatchWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+    override fun doWork(): Result {
+        if (Settings(applicationContext).isConfigured) UploadWorker.uploadAfterCall(applicationContext)
+        UploadWorker.watchCalls(applicationContext)
+        return Result.success()
     }
 }

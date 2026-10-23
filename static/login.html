@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · Eko Sahayak</title>
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/common.css">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
 <script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
   body { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
@@ -49,7 +49,7 @@
 <body>
 <div class="shell">
 <aside class="side" aria-hidden="true">
-  <div class="brand"><img src="/static/icons/eko-logo.webp" alt="" width="79" height="38"><span>Sahayak</span></div>
+  <div class="brand"><img src="static/icons/eko-logo.webp" alt="" width="79" height="38"><span>Sahayak</span></div>
   <div>
     <h2>Every CSP call answered, in Hindi or English.</h2>
     <ul>
@@ -61,7 +61,7 @@
   <div class="foot">Voice agent for Eko Relationship Managers</div>
 </aside>
 <div class="auth">
-  <div class="brand"><img src="/static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
+  <div class="brand"><img src="static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
   <h1 id="heading">Welcome back</h1>
   <p class="sub muted" id="sub"></p>
   <div class="panel">
@@ -82,10 +82,11 @@
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const SIGNUP = location.pathname === "/signup";
+const SIGNUP = /\/signup$/.test(location.pathname);
 const params = new URLSearchParams(location.search);
-// Only follow same-site paths after signing in
-const next = /^\/(?!\/)/.test(params.get("next") || "") ? params.get("next") : "/";
+// Only follow same-site paths after signing in (an absolute path, a page name or ./), never another site
+const safe = v => /^(\/(?!\/)|\.\/|[a-z])/.test(v) && !/[:\\]|\/\//.test(v);
+const next = safe(params.get("next") || "") ? params.get("next") : "./";
 const keep = params.get("next") ? `?next=${encodeURIComponent(next)}` : "";
 
 document.title = (SIGNUP ? "Create account" : "Sign in") + " · Eko Sahayak";
@@ -95,11 +96,11 @@ $("submit").textContent = SIGNUP ? "Create account" : "Sign in";
 $("nameRow").hidden = $("roleRow").hidden = $("pwHint").hidden = !SIGNUP;
 $("password").autocomplete = SIGNUP ? "new-password" : "current-password";
 $("switch").innerHTML = SIGNUP
-  ? `Already have an account? <a href="/login${keep}">Sign in</a>`
-  : `New here? <a href="/signup${keep}">Create an account</a>`;
+  ? `Already have an account? <a href="login${keep}">Sign in</a>`
+  : `New here? <a href="signup${keep}">Create an account</a>`;
 
 if (SIGNUP) {
-  fetch("/api/auth/rms").then(r => r.json()).then(rms => {
+  fetch("api/auth/rms").then(r => r.json()).then(rms => {
     $("rm").innerHTML = rms.map(r => `<option value="${r.id}">RM: ${esc(r.name)} · ${esc(r.region)}</option>`).join("")
       + `<option value="">Ops / other (not an RM)</option>`;
   });
@@ -118,7 +119,7 @@ $("form").onsubmit = async e => {
   }
   $("submit").disabled = true;
   try {
-    const r = await fetch(SIGNUP ? "/api/auth/signup" : "/api/auth/login", {
+    const r = await fetch(SIGNUP ? "api/auth/signup" : "api/auth/login", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (r.ok) return location.replace(next);
     const j = await r.json().catch(() => ({}));

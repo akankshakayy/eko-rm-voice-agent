@@ -1,7 +1,8 @@
 """Pilot: real RM-CSP call recordings, uploaded every day from the RMs' phones (Eko-issued SIMs).
 
 The uploader app (uploader/) sends the dialer's own recording of every call on the Eko SIM to
-POST /api/uploader/recordings. Once a day (RECORDINGS_DAILY_AT, default 21:00 IST) every new file is:
+POST /api/uploader/recordings a few minutes after each call. Every new file is processed as soon as it
+arrives (or once a day, if RECORDINGS_DAILY_AT is set, e.g. 21:00 IST):
   1. transcribed with Whisper on Groq, as timed segments
   2. masked: Aadhaar, PAN, card, account, phone and OTP/PIN numbers are cut from the text before it is
      stored or sent to the LLM (regex only: numbers spoken as Hindi words get through)
@@ -32,7 +33,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import db, llm_engine, stt
+from . import db, integrations, llm_engine, stt
 from .taxonomy import CATEGORIES, SLOT_LABELS
 
 log = logging.getLogger("eko.recordings")
@@ -41,7 +42,8 @@ MAX_BYTES = 100 * 1024 * 1024
 MAX_ATTEMPTS = 3                 # a recording that fails this many runs is marked failed
 MAX_PROMPT_CHARS = 9000          # ~3k tokens: fits a Groq free-tier minute with room for the answer
 RATE_LIMIT_RETRIES = 3
-DAILY_AT = os.environ.get("RECORDINGS_DAILY_AT", "21:00")
+DAILY_AT = os.environ.get("RECORDINGS_DAILY_AT", "").strip()   # "" = process each recording as it arrives
+RETRY_AFTER_S = 600              # a failed recording waits 10 min, then 20, before its next try
 TZ = ZoneInfo(os.environ.get("RECORDINGS_TZ", "Asia/Kolkata"))
 LANG = os.environ.get("RECORDINGS_LANG", "hi")
 AUDIO_EXTS = {"m4a", "mp3", "aac", "amr", "3gp", "ogg", "opus", "wav", "flac", "mp4", "webm"}
@@ -134,6 +136,7 @@ def save_upload(device: dict, data: bytes, filename: str, started_at_ms: int | N
                     digits or None, csp["id"] if csp else None, time.time()))
     except sqlite3.IntegrityError:          # the same file arrived twice at once
         return {"id": db.q("SELECT id FROM recordings WHERE sha256=?", (sha,), one=True)["id"], "duplicate": True}
+    wake()
     return {"id": rid, "duplicate": False}
 
 
@@ -313,6 +316,7 @@ def process_one(r: dict):
     if not segs:
         db.update("recordings", r["id"], **fields, is_csp_call=0, transcript_json=[],
                   summary="No speech in the recording")
+        integrations.recording_processed(r["id"])
         return
     review, model = review_call(segs) if llm_engine.provider() else ({}, None)
     speakers = review.get("speakers") or ["unknown"] * len(segs)
@@ -324,20 +328,22 @@ def process_one(r: dict):
               slots_json=review.get("slots") or {}, sentiment=review.get("sentiment"),
               resolution=review.get("resolution"), rm_handling=review.get("rm_handling"),
               summary=review.get("summary"), model=model)
+    integrations.recording_processed(r["id"])
 
 
 _busy = threading.Lock()
 
 
-def process_pending(limit: int | None = None, sleep=time.sleep) -> dict:
-    """Transcribe and review every new recording, oldest first. When a free-tier limit is hit the batch waits
-    and retries a few times, then stops; whatever is left stays new for the next run."""
+def process_pending(limit: int | None = None, sleep=time.sleep, now: float | None = None) -> dict:
+    """Transcribe and review every new recording that is due, oldest first. When a free-tier limit is hit the
+    batch waits and retries a few times, then stops; whatever is left stays new for the next run."""
     if not _busy.acquire(blocking=False):
         return {"busy": True}
     try:
         if not stt.available():
             return {"processed": 0, "failed": 0, "left": _count_new(), "stopped": "GROQ_API_KEY is not set"}
-        rows = db.q("SELECT * FROM recordings WHERE status='new' ORDER BY uploaded_at" + (f" LIMIT {int(limit)}" if limit else ""))
+        rows = db.q("SELECT * FROM recordings WHERE status='new' AND COALESCE(next_try_at, 0) <= ? ORDER BY uploaded_at"
+                    + (f" LIMIT {int(limit)}" if limit else ""), (now or time.time(),))
         done = failed = 0
         stopped = None
         for r in rows:
@@ -356,7 +362,8 @@ def process_pending(limit: int | None = None, sleep=time.sleep) -> dict:
                     attempts = r["attempts"] + 1
                     gave_up = attempts >= MAX_ATTEMPTS
                     db.update("recordings", r["id"], attempts=attempts, error=str(e)[:500],
-                              status="failed" if gave_up else "new")
+                              status="failed" if gave_up else "new",
+                              next_try_at=None if gave_up else (now or time.time()) + RETRY_AFTER_S * attempts)
                     failed += gave_up
                 break
             if stopped:
@@ -370,17 +377,39 @@ def _count_new() -> int:
     return db.q("SELECT COUNT(*) AS n FROM recordings WHERE status='new'", one=True)["n"]
 
 
-def due(now: datetime, last_day: str | None) -> bool:
-    """True once a day, at or after RECORDINGS_DAILY_AT."""
-    hh, mm = (int(p) for p in DAILY_AT.split(":"))
+_arrived = threading.Event()
+
+
+def wake():
+    """A recording arrived (or the app is stopping): let the processing thread look now."""
+    _arrived.set()
+
+
+def due(now: datetime, last_day: str | None, daily_at: str | None = None) -> bool:
+    """Daily mode: true once a day, at or after RECORDINGS_DAILY_AT."""
+    hh, mm = (int(p) for p in (daily_at or DAILY_AT).split(":"))
     return now.strftime("%Y-%m-%d") != last_day and (now.hour, now.minute) >= (hh, mm)
 
 
-def daily_loop(stop: threading.Event):
-    """Background thread (started by app.main): process the day's uploads once a day. If a free-tier
-    limit stopped the run, try again every 30 minutes until that day's queue is empty."""
+def processing_loop(stop: threading.Event):
+    """Background thread (started by app.main). By default every recording is processed within seconds of
+    its upload; a check every 5 minutes also picks up retries. With RECORDINGS_DAILY_AT set, it runs once a day
+    instead. If a free-tier limit stops a run, it tries again 30 minutes later."""
     last_day, next_try = None, 0.0
     while not stop.is_set():
+        if not DAILY_AT:
+            if time.time() >= next_try and _count_new():
+                try:
+                    res = process_pending()
+                    if res.get("processed") or res.get("stopped"):
+                        log.warning("Recordings run: %s", res)
+                    next_try = time.time() + 1800 if res.get("stopped") else 0.0
+                except Exception:
+                    log.exception("Recordings run failed")
+                    next_try = time.time() + 1800
+            _arrived.wait(300)
+            _arrived.clear()
+            continue
         now = datetime.now(TZ)
         if due(now, last_day) and time.time() >= next_try:
             try:
@@ -501,6 +530,8 @@ def _cli():
     sub.add_parser("export", help="draft scorecard cases -> evals/candidates.csv")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    from .seed import seed
+    seed()                                   # a fresh database gets its RMs, as when the server starts
     if a.cmd == "token":
         tok = create_token(a.rm, a.label, "cli")
         print(f"Upload token for {tok['rm_name']} ({tok['label'] or 'no label'}). Shown only once:\n\n  {tok['token']}\n")

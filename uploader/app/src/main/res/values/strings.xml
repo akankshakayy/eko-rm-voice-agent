@@ -11,7 +11,7 @@
     <string name="folder_hint">Where the dialer saves call recordings. Usually:\n• Google Phone: Recordings › Call recordings (or Download/Call recordings)\n• Xiaomi / Redmi / Poco: MIUI › sound_recorder › call_rec\n• Samsung: Recordings › Call\n• OnePlus / Realme / Oppo: Music › Recordings › Call Recordings</string>
     <string name="step_schedule">4. Daily upload</string>
     <string name="wifi_only">Upload on Wi-Fi only</string>
-    <string name="save">Save and start daily upload (8 pm)</string>
+    <string name="save">Save and start uploading</string>
     <string name="upload_now">Upload now</string>
     <string name="status">Status</string>
 </resources>

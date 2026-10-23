@@ -72,9 +72,9 @@ Real RM–CSP calls, collected every day to teach and test the agent. RMs call C
 call on that SIM is a work call.
 
 ```
-RM's phone: dialer records the call → Sahayak Recorder Sync app (uploader/) uploads Eko-SIM calls every evening
+RM's phone: dialer records the call → Sahayak Recorder Sync app (uploader/) uploads each Eko-SIM call ~3 min after it ends
    → POST /api/uploader/recordings (upload token per phone) → data/recordings/ (git-ignored)
-   → daily run at 21:00 IST: Whisper → mask personal numbers → LLM review
+   → processed straight away: Whisper → mask personal numbers → LLM review
        (who spoke each line: RM or CSP, issue type, details, CSP mood, how it ended, how the RM handled it, summary)
    → python -m app.recordings export → draft scorecard cases in evals/candidates.csv
 ```
@@ -83,9 +83,10 @@ RM's phone: dialer records the call → Sahayak Recorder Sync app (uploader/) up
    and paste an upload token from **Users → Recorder uploads** (admin only), or make one with
    `python -m app.recordings token --rm 1 --label "Asha's phone"`. The app only uploads calls made on the chosen
    Eko SIM, never the RM's other SIM, and it never places calls itself.
-2. **Every day:** the app uploads around 20:00. At `RECORDINGS_DAILY_AT` (21:00) the server processes every new
-   recording. If Groq's free tier runs out, the rest waits and is retried every 30 minutes. To run it now:
-   `python -m app.recordings process` or `POST /api/recordings/process`.
+2. **After every call:** the app uploads the recording about 3 minutes after the call ends (8 pm every day is a
+   safety net), and the server processes it within seconds. If Groq's free tier runs out, the rest waits and is
+   retried every 30 minutes; a recording that fails is retried after 10 and 20 minutes. To process once a day
+   instead, set `RECORDINGS_DAILY_AT=21:00`. To run it now: `python -m app.recordings process`.
 3. **See the results:** `python -m app.recordings list`, `GET /api/recordings` and `GET /api/recordings/{id}`
    (admin/ops) return the transcript with a speaker on every line, plus the review.
 4. **Feed the scorecard:** `python -m app.recordings export` cuts each CSP's opening complaint into `evals/audio/`
@@ -96,6 +97,11 @@ Aadhaar, PAN, card, account, phone and OTP/PIN numbers are masked from transcrip
 the LLM. Transaction IDs, UTRs and amounts are kept. Masking is regex-based, so numbers spoken as Hindi words get
 through, and the original audio is kept unmasked. CSPs should know their calls are recorded: Google Dialer
 announces it, but other dialers don't.
+
+## Connecting other systems
+
+Other systems can call the API with a service API key, and get webhooks when tickets, calls or recordings change.
+See **[INTEGRATION.md](INTEGRATION.md)** for keys, endpoints, events, payloads and signature checks.
 
 ## How a call works
 
@@ -143,7 +149,8 @@ app/
   metrics.py       dashboard aggregations
   simulator.py     synthetic CSP callers (live or backfill)
   seed.py          demo RMs and CSPs (replace with Eko CSP master sync)
-  recordings.py    call recordings pilot: uploads, daily transcription + review, export to the scorecard
+  recordings.py    call recordings pilot: uploads, transcription + review as calls arrive, export to the scorecard
+  integrations.py  service API keys and signed webhooks for other systems (see INTEGRATION.md)
   db.py, main.py   SQLite + FastAPI
 static/            call console, RM dashboard, ops dashboard (vanilla JS + Chart.js, vendored)
 tests/             pytest suite (incl. a mocked Claude engine test)

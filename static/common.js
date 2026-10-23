@@ -1,4 +1,4 @@
-const toLogin = () => { location.href = "/login?next=" + encodeURIComponent(location.pathname); };
+const toLogin = () => { location.href = "login?next=" + encodeURIComponent(location.pathname); };
 const api = async (path, opts = {}) => {
   const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined });
@@ -23,7 +23,7 @@ const badge = (map, k) => { const v = map[k]; return v ? `<span class="badge ${v
 const prBadge = p => `<span class="badge ${PRIORITY[p] || ""}">${esc(p)}</span>`;
 
 let CONFIG = null;
-const loadConfig = async () => (CONFIG = CONFIG || await api("/api/config"));
+const loadConfig = async () => (CONFIG = CONFIG || await api("api/config"));
 const catLabel = k => (CONFIG?.categories?.[k]?.label) || (k === "unclassified" ? "Unclassified" : k === "unknown" ? "Unknown" : k || "–");
 
 function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
@@ -37,15 +37,15 @@ const catColor = k => cssVar(catTone(k));
 const catChip = (k, text) => `<span class="cat" style="--tone:var(${catTone(k)})">${esc(text ?? catLabel(k))}</span>`;
 
 let ME = null;
-const loadMe = async () => (ME = ME || await api("/api/auth/me"));
+const loadMe = async () => (ME = ME || await api("api/auth/me"));
 
 async function signOut() {
-  try { await fetch("/api/auth/logout", { method: "POST" }); } finally { location.href = "/login"; }
+  try { await fetch("api/auth/logout", { method: "POST" }); } finally { location.href = "login"; }
 }
 
 // Which roles can open each page (the server enforces the same rules)
-const PAGES = [["/call", "Call console", ["admin", "ops"]], ["/rm", "RM dashboard", ["admin", "ops", "rm"]],
-  ["/ops", "Agent & model performance", ["admin", "ops"]], ["/users", "Users", ["admin"]]];
+const PAGES = [["call", "Call console", ["admin", "ops"]], ["rm", "RM dashboard", ["admin", "ops", "rm"]],
+  ["ops", "Agent & model performance", ["admin", "ops"]], ["users", "Users", ["admin"]]];
 const canSee = (u, path) => PAGES.find(p => p[0] === path)?.[2].includes(u.role);
 
 // ---------------------------------------------------------------- theme (light / dark, remembered per browser)
@@ -88,7 +88,7 @@ function navHtml(active) {
       <button class="secondary icon-btn theme-btn" onclick="toggleTheme()" title="Switch light / dark" aria-label="Switch light or dark theme">${themeIcon()}</button>
       <button class="secondary small" onclick="signOut()">Sign out</button>`;
   }).catch(() => {}));
-  return `<a class="brand" href="/"><img src="/static/icons/eko-logo.webp" alt="Eko" width="46" height="22"><span>Sahayak</span></a><nav>${l.map(([h, t]) =>
+  return `<a class="brand" href="./"><img src="static/icons/eko-logo.webp" alt="Eko" width="46" height="22"><span>Sahayak</span></a><nav>${l.map(([h, t]) =>
     `<a href="${h}" class="${active === h ? "active" : ""}">${t}</a>`).join("")}</nav><div class="userbox" id="userBox"></div>`;
 }
 

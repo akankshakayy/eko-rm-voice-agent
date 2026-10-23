@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Call Console · Eko Sahayak</title>
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/common.css">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
 <script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
   .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
@@ -155,9 +155,9 @@
     </section>
   </div>
 </main>
-<script src="/static/common.js"></script>
+<script src="static/common.js"></script>
 <script>
-document.getElementById("nav").innerHTML = navHtml("/call");
+document.getElementById("nav").innerHTML = navHtml("call");
 let callId = null, recog = null, listening = false, cfg = null;
 let callLang = "hi";  // the call's current language: ask | hi | en (the caller can switch mid-call)
 const ttsLang = () => callLang === "en" ? "en-IN" : "hi-IN";
@@ -175,7 +175,7 @@ const $ = id => document.getElementById(id);
   cfg = await loadConfig();
   $("engineInfo").innerHTML = `Brain: <b>${cfg.engine !== "rules" ? esc(cfg.engine_label) + " (" + esc(cfg.model) + ")" : "Rules fallback (no API key)"}</b>`
     + `<br>Mic: <b>${cfg.stt ? "Groq Whisper (any browser)" : "browser speech recognition (Chrome / Edge)"}</b>`;
-  const csps = await api("/api/csps");
+  const csps = await api("api/csps");
   $("csp").innerHTML = csps.map(c => `<option value="${c.phone}">${esc(c.name)} · ${c.csp_code} · ${esc(c.district)} (RM ${esc(c.rm_name.split(" ")[0])})</option>`).join("")
     + `<option value="9999999999">Unknown number (agent asks for CSP ID)</option>`;
 })();
@@ -222,13 +222,13 @@ function browserSpeak(text) {
   });
 }
 
-// Neural voice from the server (/api/tts); falls back to the browser's own voice if that fails.
+// Neural voice from the server (the api/tts endpoint); falls back to the browser's own voice if that fails.
 async function speak(text) {
   if (!$("speak").checked || !text) return;
   stopSpeaking();
   document.body.classList.add("agent-speaking");
   try {
-    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, lang: ttsLang() }) });
+    const r = await fetch("api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, lang: ttsLang() }) });
     if (!r.ok) throw new Error("tts " + r.status);
     const url = URL.createObjectURL(await r.blob());
     await new Promise(res => {
@@ -263,7 +263,7 @@ function endUi(c) {
 
 $("startBtn").onclick = async () => {
   $("transcript").innerHTML = "";
-  const res = await api("/api/calls", { method: "POST", body: { direction: $("direction").value, phone: $("csp").value, purpose: $("purpose").value, lang: $("lang").value } });
+  const res = await api("api/calls", { method: "POST", body: { direction: $("direction").value, phone: $("csp").value, purpose: $("purpose").value, lang: $("lang").value } });
   callId = res.call_id;
   $("callStatus").innerHTML = `<span class="live-dot"></span> Live call #${callId} <span class="badge">${$("direction").value}</span><span class="timer" id="callTimer">0:00</span>`;
   const started = Date.now();
@@ -278,7 +278,7 @@ $("startBtn").onclick = async () => {
 $("hangBtn").onclick = async () => {
   if (!callId) return;
   stopSpeaking();
-  const c = await api(`/api/calls/${callId}/hangup`, { method: "POST" });
+  const c = await api(`api/calls/${callId}/hangup`, { method: "POST" });
   renderState(c); addBubble("agent", "— CSP hung up —"); endUi(c);
 };
 
@@ -291,7 +291,7 @@ async function sendText(text, conf = null, via = "typed") {
   $("transcript").appendChild(dots); $("transcript").scrollTop = $("transcript").scrollHeight;
   document.body.classList.add("agent-thinking");
   let res;
-  try { res = await api(`/api/calls/${callId}/turn`, { method: "POST", body: { text, stt_confidence: conf } }); }
+  try { res = await api(`api/calls/${callId}/turn`, { method: "POST", body: { text, stt_confidence: conf } }); }
   finally { dots.remove(); document.body.classList.remove("agent-thinking"); }
   const ms = Math.round(performance.now() - t0);
   await agentSays(res);
@@ -360,7 +360,7 @@ function listenServer() {
     fd.append("audio", new Blob(chunks, { type: rec.mimeType }), "speech.webm");
     fd.append("lang", sttLang());
     try {
-      const r = await fetch("/api/stt", { method: "POST", body: fd });
+      const r = await fetch("api/stt", { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || r.status);
       $("interim").textContent = "";
@@ -382,7 +382,7 @@ function stopListen() {
   listening = false; $("micBtn").classList.remove("listening");
 }
 // Closing or reloading the tab hangs up, so abandoned calls don't stay "ongoing"
-addEventListener("pagehide", () => { if (callId) navigator.sendBeacon(`/api/calls/${callId}/hangup`); });
+addEventListener("pagehide", () => { if (callId) navigator.sendBeacon(`api/calls/${callId}/hangup`); });
 $("micBtn").onclick = () => listening ? stopListen() : (stopSpeaking(), listen());
 $("quick").onclick = e => { const b = e.target.closest("button[data-say]"); if (b && !b.disabled && callId) { stopSpeaking(); stopListen(); sendText(b.dataset.say, null, "sample phrase"); } };
 window.speechSynthesis?.getVoices();

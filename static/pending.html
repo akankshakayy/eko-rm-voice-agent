@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Waiting for approval · Eko Sahayak</title>
-<link rel="icon" href="/favicon.ico" sizes="48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png">
-<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-<link rel="stylesheet" href="/static/common.css">
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
 <script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <style>
   body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -24,7 +24,7 @@
 </head>
 <body>
 <div class="box">
-  <div class="brand"><img src="/static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
+  <div class="brand"><img src="static/icons/eko-logo.webp" alt="Eko" width="75" height="36"><span>Sahayak</span></div>
   <div class="panel">
     <div class="hourglass" aria-hidden="true"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h12M6 22h12M7 2c0 5 10 5 10 10S7 17 7 22M17 2c0 5-10 5-10 10s10 5 10 10"/></svg></div>
     <h2>Your account is waiting for approval</h2>
@@ -36,16 +36,16 @@
     </div>
   </div>
 </div>
-<script src="/static/common.js"></script>
+<script src="static/common.js"></script>
 <script>
 loadMe().then(u => {
   document.getElementById("who").innerHTML = `Signed in as <b>${esc(u.name)}</b> (${esc(u.email)})`
     + (u.rm_name ? `, asking to be RM <b>${esc(u.rm_name)}</b>.` : ".");
-  if (u.role !== "pending") location.href = "/";
+  if (u.role !== "pending") location.href = "./";
 });
 // Poll so the page moves on by itself once an admin approves the account
 setInterval(async () => {
-  try { const u = await (await fetch("/api/auth/me")).json(); if (u.role && u.role !== "pending") location.href = "/"; } catch (e) {}
+  try { const u = await (await fetch("api/auth/me")).json(); if (u.role && u.role !== "pending") location.href = "./"; } catch (e) {}
 }, 10000);
 </script>
 </body>

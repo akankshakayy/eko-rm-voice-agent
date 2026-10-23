@@ -1,6 +1,6 @@
 # Sahayak Recorder Sync (Android)
 
-A small Android app for the recordings pilot. Once a day it uploads the call recordings the phone's **own dialer**
+A small Android app for the recordings pilot. A few minutes after every call it uploads the call recordings the phone's **own dialer**
 already made, but **only for calls on the Eko-issued SIM**, to the Sahayak server. There they are transcribed and
 summarized for training and scoring the agent.
 
@@ -8,7 +8,7 @@ summarized for training and scoring the agent.
 |---|---|
 | Reads the call log to find which recording belongs to which call and SIM | Place calls, send SMS (no `CALL_PHONE` / `SEND_SMS` permission) |
 | Reads the recordings folder you pick (Storage Access Framework, read-only) | Record audio itself (no `RECORD_AUDIO`), or read any other folder |
-| Uploads Eko-SIM call recordings at about 8 pm every day, plus an **Upload now** button | Upload recordings of calls on any other SIM, which stay on the phone |
+| Uploads each Eko-SIM call recording about 3 minutes after the call ends, checks again at 8 pm every day, plus an **Upload now** button | Upload recordings of calls on any other SIM, which stay on the phone |
 
 ## How it decides what to upload
 
@@ -53,7 +53,7 @@ summarized for training and scoring the agent.
 4. Enter the server address and paste the token, then tap **Test connection**. It should show the RM's name.
 5. Pick the **Eko SIM**. Tap **Choose folder** and open the dialer's recordings folder (the app lists the usual
    locations), then tap **Use this folder › Allow**.
-6. Tap **Save and start daily upload**, then **Upload now** once. The status should show the test call as uploaded.
+6. Tap **Save and start uploading**, then **Upload now** once. The status should show the test call as uploaded.
 7. Turn off battery optimisation for the app (App info › Battery › **Unrestricted**). Xiaomi, Oppo and Realme
    otherwise stop background work, and that phone's uploads stop.
 
@@ -81,7 +81,7 @@ wider rollout, sign a release build or push it through Eko's MDM.
 app/src/main/java/co/eko/sahayak/recsync/
   Matcher.kt       file ↔ call matching, Eko-SIM check, server URL rule (pure Kotlin, unit-tested)
   Device.kt        SIM list, call log, recordings folder listing
-  UploadWorker.kt  the daily WorkManager job and "Upload now"
+  UploadWorker.kt  upload after each call (call-log trigger), the 8 pm safety run and "Upload now"
   Api.kt           ping + multipart upload (OkHttp)
   Settings.kt      setup values (token in EncryptedSharedPreferences), handled-file ledger, last run status
   MainActivity.kt  the setup and status screen
