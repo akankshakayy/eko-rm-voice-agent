@@ -37,6 +37,9 @@ EMB_FILE = "wespeaker_en_voxceleb_resnet34_LM.onnx"           # trained on VoxCe
 EMB_URL = f"{RELEASES}/speaker-recongition-models/{EMB_FILE}"  # sic: the release tag is spelled this way
 SAMPLE_RATE = 16000
 NEW_LINE_GAP_S = 1.2       # a pause this long starts a new line even when the same voice carries on
+LONG_LINE_CHARS = 240      # past this length, a shorter pause (SOFT_GAP_S) also starts a new line
+SOFT_GAP_S = 0.3
+MAX_LINE_CHARS = 600       # and past this, the line breaks at the next word
 _lock = threading.Lock()
 _engine = None
 
@@ -229,7 +232,9 @@ def assign_words(words: list[dict], turns: list[dict]) -> list[dict]:
     lines = []
     for w, v in zip(words, voices):
         last = lines[-1] if lines else None
-        if last and last["voice"] == v and w["start"] - last["end"] < NEW_LINE_GAP_S:
+        gap = w["start"] - last["end"] if last else 0
+        long_line = last and (len(last["text"]) > MAX_LINE_CHARS or (len(last["text"]) > LONG_LINE_CHARS and gap >= SOFT_GAP_S))
+        if last and last["voice"] == v and gap < NEW_LINE_GAP_S and not long_line:
             last["text"] += " " + w["word"]
             last["end"] = round(w["end"], 2)
         else:

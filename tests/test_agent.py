@@ -1282,3 +1282,18 @@ def test_a_failed_summary_never_fails_the_recording(monkeypatch):
             break
         time.sleep(0.05)
     assert admin.get("/api/recordings/1").json()["report_md"].startswith("## In short\nFixed.")
+
+
+def test_a_leaked_whisper_hint_is_dropped_and_long_lines_are_broken():
+    from app.diarize import assign_words
+    from app.recordings import _drop_leaks
+    hint = "हाँ जी, ठीक है। तो ये website का project है, उसमें docs folder है।"
+    segs = [{"start": 0, "end": 3, "text": "हम kiosk website की बात कर रहे हैं।"},
+            {"start": 3, "end": 6, "text": "तो ये website का project है, उसमें docs folder है।"},   # the hint, over silence
+            {"start": 6, "end": 9, "text": "Testing बहुत ज़रूरी है।"}]
+    words = [{"word": "हम", "start": 0.1, "end": 0.4}, {"word": "तो", "start": 3.2, "end": 3.5}, {"word": "Testing", "start": 6.1, "end": 6.6}]
+    s2, w2 = _drop_leaks(segs, words, hint)
+    assert [s["start"] for s in s2] == [0, 6] and [w["word"] for w in w2] == ["हम", "Testing"]
+    many = [{"word": f"शब्द{i}", "start": i * 0.5, "end": i * 0.5 + 0.2} for i in range(200)]   # one voice, no punctuation
+    lines = assign_words(many, [{"start": 0, "end": 200, "voice": "A"}])
+    assert len(lines) > 1 and all(len(l["text"]) <= 700 for l in lines)

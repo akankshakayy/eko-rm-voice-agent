@@ -48,9 +48,10 @@ TZ = ZoneInfo(os.environ.get("RECORDINGS_TZ", "Asia/Kolkata"))
 LANG = os.environ.get("RECORDINGS_LANG", "hi")
 # Recorded calls aren't live, so they get Whisper's most accurate model (the live agent uses the faster turbo one)
 STT_MODEL = os.environ.get("RECORDINGS_STT_MODEL", "whisper-large-v3")
-# No hint sentence for recordings: Whisper copied the live agent's hint ("मेरा DMT transfer fail हो गया") into a
-# 31-minute meeting that never mentioned a DMT. A vocabulary hint can be set here if a term is often misheard.
-STT_PROMPT = os.environ.get("RECORDINGS_STT_PROMPT", "") or None
+# A style-only hint: without one, Whisper writes English words in Devanagari ("वेबसाइट") with no punctuation, and
+# mishears more. It must carry no facts: the live agent's hint ("मेरा DMT transfer fail हो गया") once turned up as
+# a line in a meeting that never mentioned a DMT. Lines that repeat the hint are dropped (_drop_leaks) as well.
+STT_PROMPT = os.environ.get("RECORDINGS_STT_PROMPT", "हाँ जी, ठीक है। तो ये website का project है, उसमें docs folder है।") or None
 AUDIO_EXTS = {"m4a", "mp3", "aac", "amr", "3gp", "ogg", "opus", "wav", "flac", "mp4", "webm"}
 DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 SPEAKERS = ["rm", "csp", "other", "unknown"]
@@ -403,6 +404,26 @@ def _lines(r: dict, path: str, cache: dict) -> list[dict]:
 PROMPT_UNSET = object()     # results saved before the prompt was recorded are redone
 
 
+def _norm(text: str) -> str:
+    return re.sub(r"\W+", " ", (text or "").lower()).strip()
+
+
+def _drop_leaks(segs: list[dict], words: list[dict], prompt: str | None) -> tuple[list[dict], list[dict]]:
+    """Whisper sometimes repeats its hint over silence or noise. Drop every segment that mostly repeats it (and
+    that segment's words), so a hint can never show up as something a person said."""
+    if not prompt:
+        return segs, words
+    from difflib import SequenceMatcher
+    p = _norm(prompt)
+    leaked = [s for s in segs if (n := _norm(s["text"])) and
+              (SequenceMatcher(None, n, p).ratio() >= 0.6 or (len(n) >= 12 and n in p))]
+    if not leaked:
+        return segs, words
+    log.warning("Dropped %d transcript segment(s) that repeat the Whisper hint", len(leaked))
+    inside = lambda w: any(s["start"] - 0.05 <= w["start"] < s["end"] + 0.05 for s in leaked)   # noqa: E731
+    return [s for s in segs if s not in leaked], [w for w in words if not inside(w)]
+
+
 def _transcribe(r: dict, path: str) -> dict:
     """The speech-to-text result, reused from an earlier run with the same settings when there is one.
     With SARVAM_API_KEY: Sarvam's transcript already split by speaker. Otherwise Whisper's segments and words."""
@@ -432,9 +453,13 @@ def _transcribe(r: dict, path: str) -> dict:
         if _is_rate_limit(e):
             raise RateLimited("Whisper rate limit", 300) from e
         raise
+    segs, words = _drop_leaks(segs, words, STT_PROMPT)
+    old = cache
     cache = {"model": STT_MODEL, "prompt": STT_PROMPT, "segments": segs, "words": words,
              "stt": f"Whisper {STT_MODEL}" + (", speakers by the local voice model" if want_words else ""),
              "transcribe_s": round(time.perf_counter() - t0, 1), "transcribe_at": time.time()}
+    # Voice turns come from the audio, not the words: keep them when only the transcription is redone
+    cache.update({k: old[k] for k in ("turns", "voice_settings", "voices_s", "voices_at") if k in old})
     db.update("recordings", r["id"], stt_json=cache)
     return cache
 
