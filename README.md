@@ -80,8 +80,10 @@ of a demo RM to a real one instead of unlinking them). The LLM only ever sees a 
 
 **Test CSPs and the call console.** Real CSPs are never called while Sahayak is being tested: every call that would
 involve one (by number, by picking it, or by saying its code mid-call) is refused until `REAL_CSP_CALLS=1`.
-`python -m app.synthetic` gives each RM 12 made-up test CSPs (codes `TST…`, mobile numbers starting with 5, which no
-Indian mobile does; names never match a real CSP; this month's scheme counts cover every slab case). In the call
+`python -m app.synthetic` gives each RM 20 made-up test CSPs (codes `TST…`, mobile numbers starting with 5, which no
+Indian mobile does; names never match a real CSP). The first 11 are edge cases: every slab situation this month, a
+number shared by two CSPs, no number, one that left the sheet. The rest have April-to-now history drawn from the real
+sheet's per-category percentiles (5th to 95th only, so no single CSP's figures are reproduced). In the call
 console, pick an RM to see their own CSPs and search by code or name: test CSPs can be called, real CSPs are listed
 for reference only (without their numbers). Calls to test CSPs are marked as tests and send no webhook events.
 

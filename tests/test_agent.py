@@ -1317,16 +1317,46 @@ def _real_csp(code="CSP99999", phone="9123400777", rm_id=1, name="Real Person"):
 def test_synthetic_csps_cover_slab_cases_and_never_look_real():
     from app import db, synthetic
     _real_csp(name="Sunita Devi")                                        # a real name the generator must avoid
-    r = synthetic.generate(per_rm=8)
+    r = synthetic.generate(per_rm=14)
     rows = db.q("SELECT * FROM csps WHERE source='synthetic'")
-    assert r["written"] == 24 and len(rows) == 24                        # 3 demo RMs x 8
-    assert all(c["csp_code"].startswith("TST") and synthetic.is_synthetic_phone(c["phone"]) for c in rows)
+    assert r["written"] == 42 == len(rows) and r["edge case"] == 33 and r["realistic"] == 9   # 3 demo RMs
+    assert all(c["csp_code"].startswith("TST") for c in rows)
+    assert all(synthetic.is_synthetic_phone(n) for c in rows for n in (c["phone"], c["shared_phone"]) if n)
     assert "sunita devi" not in {c["name"].lower() for c in rows}
-    assert len({c["phone"] for c in rows}) == 24
-    slabs = {m["slab"] for m in db.q("SELECT slab FROM csp_monthly m JOIN csps c ON c.id=m.csp_id WHERE c.source='synthetic'")}
+    mine = [c for c in rows if c["rm_id"] == 1]
+    assert sum(c["phone"] is None and c["shared_phone"] is not None for c in mine) == 2      # one shared number
+    assert len({c["shared_phone"] for c in mine if c["shared_phone"]}) == 1
+    assert sum(c["phone"] is None and c["shared_phone"] is None for c in mine) == 1          # no number
+    assert sum(c["active"] == 0 for c in mine) == 1                                          # left the sheet
+    month = r["months"][-1]
+    slabs = {m["slab"] for m in db.q("SELECT slab FROM csp_monthly m JOIN csps c ON c.id=m.csp_id "
+                                     "WHERE c.source='synthetic' AND m.month=?", (month,))}
     assert {"No Slab", "Slab-1", "Slab-2", "Super Slab"} <= slabs
-    synthetic.generate(per_rm=8)                                         # again: updated in place
-    assert len(db.q("SELECT 1 FROM csps WHERE source='synthetic'")) == 24
+    assert len(r["months"]) >= 4                                         # history, not just this month
+    synthetic.generate(per_rm=14)                                        # again: updated in place
+    assert len(db.q("SELECT 1 FROM csps WHERE source='synthetic'")) == 42
+
+
+def test_synthetic_figures_follow_each_category_without_copying_a_real_csp():
+    from app import db, synthetic
+    # 60 made-up "real" CSPs: Gold ones sell far more than Basic ones
+    for i in range(60):
+        tier = "Gold CSP" if i % 2 else "Basic CSP"
+        cid = db.x("INSERT INTO csps(csp_code,name,phone,rm_id,category,source) VALUES(?,?,NULL,1,?,'kb')",
+                   (f"1A85{9000 + i}", f"Person {i}", tier))
+        n = 30 + i if tier == "Gold CSP" else i % 3
+        db.x("INSERT INTO csp_monthly(csp_id,month,pmjdy,pmjjby,pmsby,apy,txn_count,commission) VALUES(?,?,?,?,?,?,?,?)",
+             (cid, "2026-10", n, n, n, n, n * 10, n * 100))
+    prof = synthetic.profile()
+    assert prof["from_real"] and prof["months"]["pmsby"] == ["2026-10"]
+    assert max(prof["spread"]["Basic CSP"]["pmsby"]) <= 2 < min(prof["spread"]["Gold CSP"]["pmsby"][3:])
+    assert max(prof["spread"]["Gold CSP"]["pmsby"]) < 89                 # the top real value (89) is cut off
+    synthetic.generate(per_rm=30)
+    got = {t: [m["pmsby"] for m in db.q("SELECT m.pmsby FROM csp_monthly m JOIN csps c ON c.id=m.csp_id WHERE "
+                                        "c.source='synthetic' AND c.category=? AND c.active=1 AND c.terminal_status='Active'", (t,))]
+           for t in ("Basic CSP", "Gold CSP")}
+    assert got["Gold CSP"] and got["Basic CSP"]
+    assert sorted(got["Gold CSP"])[len(got["Gold CSP"]) // 2] > sorted(got["Basic CSP"])[len(got["Basic CSP"]) // 2]
 
 
 def test_real_csps_cannot_be_called_while_testing(monkeypatch):
