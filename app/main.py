@@ -602,25 +602,30 @@ def _device(request: Request) -> dict:
 
 @app.get("/api/uploader/ping")
 def uploader_ping(device=Depends(_device)):
-    return {"ok": True, "rm_id": device["rm_id"], "rm_name": device["rm_name"]}
+    """The app's setup screen: whose phone this is, or (shared token) the RMs to choose from. Only for a valid
+    upload token, and only ids and names."""
+    return {"ok": True, "rm_id": device["rm_id"], "rm_name": device["rm_name"], "rm_locked": bool(device["rm_id"]),
+            "rms": recordings.rms_for_app()}
 
 
 @app.post("/api/uploader/recordings")
 def uploader_upload(audio: UploadFile = File(...), started_at: int | None = Form(None),
                     duration_sec: float | None = Form(None), direction: str = Form("unknown"),
-                    other_number: str = Form(""), device_id: str = Form(""), device=Depends(_device)):
+                    other_number: str = Form(""), device_id: str = Form(""), rm_id: int | None = Form(None),
+                    device=Depends(_device)):
     data = audio.file.read(recordings.MAX_BYTES + 1)
     if len(data) > recordings.MAX_BYTES:
         raise HTTPException(413, "Recording is over 100 MB")
     try:
+        device = {**device, "rm_id": recordings.uploader_rm(device, rm_id)}
         return recordings.save_upload(device, data, audio.filename or "", started_at, duration_sec, direction,
                                       other_number, device_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
 
-class TokenBody(BaseModel):
-    rm_id: int
+class UploadTokenBody(BaseModel):
+    rm_id: int | None = None          # None: a shared token, each RM picks their name in the app
     label: str = ""
 
 
@@ -630,7 +635,7 @@ def upload_tokens():
 
 
 @app.post("/api/uploader/tokens")
-def new_upload_token(body: TokenBody, actor=Depends(allow("admin"))):
+def new_upload_token(body: UploadTokenBody, actor=Depends(allow("admin"))):
     try:
         return recordings.create_token(body.rm_id, body.label, actor.get("name") or actor.get("email"))
     except ValueError as e:

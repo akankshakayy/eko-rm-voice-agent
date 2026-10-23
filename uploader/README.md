@@ -31,13 +31,14 @@ summarized for training and scoring the agent.
 
 | Call | Purpose |
 |---|---|
-| `GET /api/uploader/ping` with `Authorization: Bearer <token>` | Test connection, show which RM the token belongs to |
+| `GET /api/uploader/ping` with `Authorization: Bearer <token>` | Test connection: the RM a personal token belongs to, or the RMs to choose from |
 | `POST /api/uploader/recordings` (multipart) | Fields: `audio`, `started_at` (epoch ms), `duration_sec`, `direction` (`incoming` / `outgoing` / `unknown`), `other_number`, `device_id` |
 
 ## Pilot setup (per RM phone)
 
-1. **Get an upload token.** The Sahayak admin creates one for the RM on the **Users** page under **Recorder uploads**
-   (or `POST /api/uploader/tokens`). One token per phone, so it can be revoked on its own.
+1. **Get an upload token.** The Sahayak admin creates one on the **Users** page under **Recorder uploads**
+   (or `POST /api/uploader/tokens`): either for one RM (that phone can only upload as them), or "Any RM", where
+   the RM picks their name in the app. One token per phone is safest, so each can be revoked on its own.
 2. **Turn on automatic call recording in the dialer:**
 
    | Phone | Where |
@@ -50,7 +51,8 @@ summarized for training and scoring the agent.
    Make one short test call on the **Eko SIM** and check that a recording appears.
 3. **Install the app** (below), open it, and grant **Call logs** and **Phone** permissions. If Android shows
    "Restricted setting", go to App info › ⋮ › **Allow restricted settings**, then open the app again.
-4. Enter the server address and paste the token, then tap **Test connection**. It should show the RM's name.
+4. Enter the server address and paste the token, then tap **Test connection**. Under **2. Your name (RM)** pick
+   the RM (a personal token shows its RM's name, locked). Every recording from the phone is filed under that name.
 5. Pick the **Eko SIM**. Tap **Choose folder** and open the dialer's recordings folder (the app lists the usual
    locations), then tap **Use this folder › Allow**.
 6. Tap **Save and start uploading**, then **Upload now** once. The status should show the test call as uploaded.

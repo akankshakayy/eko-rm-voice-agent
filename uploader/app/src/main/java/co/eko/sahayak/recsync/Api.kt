@@ -31,18 +31,25 @@ class Api(private val serverUrl: String, private val token: String) {
         .connectTimeout(20, TimeUnit.SECONDS).writeTimeout(5, TimeUnit.MINUTES).readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    /** Returns the RM's name for this token, or throws IOException with a readable message. */
-    fun ping(): String {
+    /** Whose phone this is. A personal token names one RM (locked); a shared token lists the RMs to choose from. */
+    data class Ping(val rmId: Int, val rmName: String, val locked: Boolean, val rms: List<Pair<Int, String>>)
+
+    /** Throws IOException with a readable message when the server or token isn't right. */
+    fun ping(): Ping {
         val req = Request.Builder().url("$serverUrl/api/uploader/ping").header("Authorization", "Bearer $token").build()
         client.newCall(req).execute().use { r ->
             val body = r.body?.string().orEmpty()
             if (r.code == 401) throw IOException("Token rejected: ${detail(body)}")
             if (!r.isSuccessful) throw IOException("Server said ${r.code}: ${detail(body)}")
-            return JSONObject(body).optString("rm_name", "")
+            val j = JSONObject(body)
+            val list = j.optJSONArray("rms")
+            val rms = (0 until (list?.length() ?: 0)).map { list!!.getJSONObject(it).let { o -> o.getInt("id") to o.getString("name") } }
+            return Ping(j.optInt("rm_id", -1).takeIf { !j.isNull("rm_id") } ?: -1, j.optString("rm_name", "")
+                .takeIf { !j.isNull("rm_name") } ?: "", j.optBoolean("rm_locked", true), rms)
         }
     }
 
-    fun upload(resolver: ContentResolver, file: RecFile, call: CallEntry, deviceId: String): Upload {
+    fun upload(resolver: ContentResolver, file: RecFile, call: CallEntry, deviceId: String, rmId: Int): Upload {
         val audio = object : RequestBody() {
             override fun contentType(): MediaType = mimeFor(file.name).toMediaType()
             override fun contentLength() = file.size
@@ -58,6 +65,7 @@ class Api(private val serverUrl: String, private val token: String) {
             .addFormDataPart("direction", call.direction)
             .addFormDataPart("other_number", call.number)
             .addFormDataPart("device_id", deviceId)
+            .addFormDataPart("rm_id", rmId.toString())            // the RM chosen in setup: who made this call
             .build()
         val req = Request.Builder().url("$serverUrl/api/uploader/recordings")
             .header("Authorization", "Bearer $token").post(form).build()

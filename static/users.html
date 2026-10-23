@@ -142,7 +142,7 @@ $("list").onclick = async e => {
 function tokRow(t) {
   const used = t.last_upload_at ? `last upload ${ago(t.last_upload_at)}` : "no uploads yet";
   return `<div class="trow ${t.revoked_at ? "revoked" : ""}" data-id="${t.id}">
-    <div><b>${esc(t.rm_name || "–")}</b><div class="small muted">${esc(t.label || "no label")}</div></div>
+    <div><b>${esc(t.rm_name || "Any RM")}</b><div class="small muted">${esc(t.label || "no label")}${t.rm_id ? "" : " · RM chosen in the app"}</div></div>
     <div class="small">${num(t.uploads)} recording${t.uploads === 1 ? "" : "s"}<div class="muted">${used}</div></div>
     <div class="small muted">made ${fmtTime(t.created_at)}${t.created_by ? " by " + esc(t.created_by) : ""}${t.revoked_at ? " · revoked " + fmtTime(t.revoked_at) : ""}</div>
     <div>${t.revoked_at ? "" : `<button class="danger revoke">Revoke</button>`}</div>
@@ -157,8 +157,9 @@ async function loadTokens() {
 
 $("tokcreate").onclick = async () => {
   try {
-    const t = await api("api/uploader/tokens", { method: "POST", body: { rm_id: Number($("tokrm").value), label: $("toklabel").value } });
-    $("newtok").innerHTML = `<div class="newtok"><b>Token for ${esc(t.rm_name)}</b> · paste it into the app on their phone. It is shown only now.
+    const rm = $("tokrm").value;
+    const t = await api("api/uploader/tokens", { method: "POST", body: { rm_id: rm ? Number(rm) : null, label: $("toklabel").value } });
+    $("newtok").innerHTML = `<div class="newtok"><b>${t.rm_name ? `Token for ${esc(t.rm_name)}` : "Shared token: each RM picks their name in the app"}</b> · paste it into the app on the phone. It is shown only now.
       <code>${esc(t.token)}</code><button class="secondary" id="tokcopy">Copy</button></div>`;
     $("tokcopy").onclick = () => navigator.clipboard?.writeText(t.token).then(() => toast("Token copied"));
     $("toklabel").value = "";
@@ -178,7 +179,8 @@ $("tokens").onclick = async e => {
   await loadMe();
   RMS = await api("api/rms");
   $("origin").textContent = location.origin;
-  $("tokrm").innerHTML = RMS.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region)}</option>`).join("");
+  $("tokrm").innerHTML = RMS.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region || "")}</option>`).join("")
+    + `<option value="">Any RM (they choose their name in the app)</option>`;
   await load();
   await loadTokens();
 })();

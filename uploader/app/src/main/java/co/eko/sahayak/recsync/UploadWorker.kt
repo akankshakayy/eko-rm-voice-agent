@@ -70,7 +70,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
                 call == null && age < CALL_LOG_LAG_MS -> { blocked = true; continue }   // call log may lag
                 call == null -> "skip: no matching call"
                 !Matcher.isEkoSim(call.accountId, s.ekoAccountIds) -> "skip: not the Eko SIM"
-                else -> when (val r = api.upload(applicationContext.contentResolver, f, call, s.deviceId)) {
+                else -> when (val r = api.upload(applicationContext.contentResolver, f, call, s.deviceId, s.rmId)) {
                     is Api.Upload.Ok -> if (r.duplicate) "duplicate" else "uploaded"
                     is Api.Upload.Rejected -> "rejected ${r.code}: ${r.detail}"
                     is Api.Upload.Unauthorized -> {

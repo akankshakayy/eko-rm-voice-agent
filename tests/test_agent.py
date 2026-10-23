@@ -1400,3 +1400,35 @@ def test_console_lists_each_rms_csps_and_searches_by_code_or_name():
     assert c.get("/api/console/csps?q=kamla").json()["real"][0]["name"] == "Kamla Prasad"
     assert c.get("/api/console/csps?q=%25").json()["test"] == []         # % is searched for literally
     assert c.get("/api/console/csps?rm_id=1").json()["real"] == []
+
+
+def test_shared_token_uploads_carry_the_rm_chosen_in_the_app():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    admin = _client()
+    shared = admin.post("/api/uploader/tokens", json={"rm_id": None, "label": "pilot phones"}).json()
+    assert shared["rm_id"] is None
+    phone = TestClient(app)
+    auth = {"Authorization": f"Bearer {shared['token']}"}
+    ping = phone.get("/api/uploader/ping", headers=auth).json()
+    assert ping["rm_locked"] is False and ping["rm_id"] is None
+    assert ping["rms"] and all(set(r) == {"id", "name"} for r in ping["rms"])     # no contact details
+    rm2 = ping["rms"][1]["id"]
+    assert phone.post("/api/uploader/recordings", files={"audio": ("a.m4a", b"one")}, headers=auth).status_code == 400
+    r = phone.post("/api/uploader/recordings", files={"audio": ("a.m4a", b"one")}, data={"rm_id": str(rm2)}, headers=auth)
+    assert r.status_code == 200 and admin.get(f"/api/recordings/{r.json()['id']}").json()["rm_id"] == rm2
+
+
+def test_personal_token_keeps_its_rm_and_refuses_another_name():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    admin = _client()
+    tok = _admin_token(admin, rm_id=1)
+    phone = TestClient(app)
+    auth = {"Authorization": f"Bearer {tok}"}
+    ping = phone.get("/api/uploader/ping", headers=auth).json()
+    assert ping["rm_locked"] is True and ping["rm_id"] == 1
+    bad = phone.post("/api/uploader/recordings", files={"audio": ("a.m4a", b"x")}, data={"rm_id": "2"}, headers=auth)
+    assert bad.status_code == 400 and "belongs to" in bad.json()["detail"]
+    ok = phone.post("/api/uploader/recordings", files={"audio": ("a.m4a", b"x")}, data={"rm_id": "1"}, headers=auth)
+    assert ok.status_code == 200

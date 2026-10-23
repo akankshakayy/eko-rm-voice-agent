@@ -24,12 +24,15 @@ import java.util.concurrent.Executors
 class MainActivity : Activity() {
     private lateinit var s: Settings
     private var sims: List<Device.Sim> = emptyList()
+    private var rms: List<Pair<Int, String>> = emptyList()
     private val io = Executors.newSingleThreadExecutor()
 
     private val server by lazy { findViewById<EditText>(R.id.server) }
     private val token by lazy { findViewById<EditText>(R.id.token) }
     private val testResult by lazy { findViewById<TextView>(R.id.test_result) }
     private val simSpinner by lazy { findViewById<Spinner>(R.id.sim) }
+    private val rmSpinner by lazy { findViewById<Spinner>(R.id.rm) }
+    private val rmHint by lazy { findViewById<TextView>(R.id.rm_hint) }
     private val folder by lazy { findViewById<TextView>(R.id.folder) }
     private val wifiOnly by lazy { findViewById<CheckBox>(R.id.wifi_only) }
     private val status by lazy { findViewById<TextView>(R.id.status) }
@@ -42,6 +45,8 @@ class MainActivity : Activity() {
         token.setText(s.token)
         wifiOnly.isChecked = s.wifiOnly
         showFolder()
+        if (s.rmId > 0) showRms(listOf(s.rmId to s.rmName), s.rmLocked)    // until Test connection reloads the list
+        else showRms(emptyList(), false)
 
         findViewById<Button>(R.id.test).setOnClickListener { testConnection() }
         findViewById<Button>(R.id.pick_folder).setOnClickListener {
@@ -96,32 +101,52 @@ class MainActivity : Activity() {
         testResult.text = "Checking…"
         val tok = token.text.toString().trim()
         io.execute {
-            val msg = try {
-                val name = Api(url, tok).ping()
-                s.rmName = name
-                "Connected. Uploads will be filed under RM: $name"
+            try {
+                val p = Api(url, tok).ping()
+                runOnUiThread {
+                    if (p.locked) {
+                        showRms(listOf(p.rmId to p.rmName), true)
+                        testResult.text = "Connected. This phone's token belongs to ${p.rmName}."
+                    } else {
+                        showRms(p.rms, false)
+                        testResult.text = "Connected. Choose your name below."
+                    }
+                }
             } catch (e: Exception) {
-                "Couldn't connect: ${e.message}"
+                runOnUiThread { testResult.text = "Couldn't connect: ${e.message}" }
             }
-            runOnUiThread { testResult.text = msg }
         }
+    }
+
+    /** Step 2: the RM list from the server, or the one name a personal token fixes. */
+    private fun showRms(list: List<Pair<Int, String>>, locked: Boolean) {
+        rms = list
+        rmSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            list.map { it.second }.ifEmpty { listOf("Tap Test connection first") })
+        list.indexOfFirst { it.first == s.rmId }.takeIf { it >= 0 }?.let(rmSpinner::setSelection)
+        rmSpinner.isEnabled = list.size > 1 && !locked
+        rmHint.text = getString(if (locked) R.string.rm_locked_hint else R.string.rm_hint)
+        s.rmLocked = locked
     }
 
     private fun save() {
         val url = server.text.toString().trim().trimEnd('/')
         Matcher.serverUrlProblem(url)?.let { return toast(it) }
         if (token.text.isBlank()) return toast("Paste the upload token")
+        val rm = rms.getOrNull(rmSpinner.selectedItemPosition) ?: return toast("Tap Test connection, then choose your name")
         val sim = sims.getOrNull(simSpinner.selectedItemPosition) ?: return toast("Choose the Eko SIM")
         if (s.folderUri.isEmpty()) return toast("Choose the call recordings folder")
         s.serverUrl = url
         s.token = token.text.toString()
+        s.rmId = rm.first
+        s.rmName = rm.second
         s.ekoSubId = sim.subId
         s.ekoSimLabel = sim.label
         s.ekoAccountIds = sim.accountIds
         s.wifiOnly = wifiOnly.isChecked
         UploadWorker.scheduleDaily(this)
         UploadWorker.watchCalls(this)
-        toast("Saved. Recordings upload every day at about 8 pm.")
+        toast("Saved. Each Eko-SIM call is uploaded a few minutes after it ends, under ${rm.second}.")
         showStatus()
     }
 
@@ -134,8 +159,8 @@ class MainActivity : Activity() {
         val st = s.status()
         val fmt = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
         status.text = buildString {
-            appendLine(if (s.isConfigured) "Daily upload is on (Eko SIM: ${s.ekoSimLabel})" else "Setup not finished")
-            if (s.rmName.isNotEmpty()) appendLine("RM: ${s.rmName}")
+            appendLine(if (s.isConfigured) "Uploading is on (Eko SIM: ${s.ekoSimLabel})" else "Setup not finished")
+            if (s.rmName.isNotEmpty()) appendLine("Uploading as: ${s.rmName}")
             if (st.at == 0L) appendLine("No upload run yet") else {
                 appendLine("Last run: ${fmt.format(Date(st.at))}")
                 appendLine("Uploaded ${st.uploaded} · already on server ${st.duplicates} · " +

@@ -116,8 +116,10 @@ RM's phone: dialer records the call → Sahayak Recorder Sync app (uploader/) up
 
 1. **Set up a phone:** turn on automatic call recording in the dialer, install the app (see `uploader/README.md`),
    and paste an upload token from **Users → Recorder uploads** (admin only), or make one with
-   `python -m app.recordings token --rm 1 --label "Asha's phone"`. The app only uploads calls made on the chosen
-   Eko SIM, never the RM's other SIM, and it never places calls itself.
+   `python -m app.recordings token --rm 4 --label "Shiwani's phone"`. In the app's setup the RM picks **their
+   name**, and every recording is filed under it. A personal token (made for one RM) fixes the name and refuses
+   any other; a shared token (`token` without `--rm`, or "Any RM" on the Users page) lets each RM pick theirs.
+   The app only uploads calls made on the chosen Eko SIM, never the RM's other SIM, and it never places calls.
 2. **After every call:** the app uploads the recording about 3 minutes after the call ends (8 pm every day is a
    safety net), and the server processes it within seconds. If Groq's free tier runs out, the rest waits and is
    retried every 30 minutes; a recording that fails is retried after 10 and 20 minutes. To process once a day

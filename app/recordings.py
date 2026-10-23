@@ -11,7 +11,8 @@ arrives (or once a day, if RECORDINGS_DAILY_AT is set, e.g. 21:00 IST):
 Audio and results stay in data/ (git-ignored). `export` cuts the CSP's opening complaint from each finished
 call into draft scorecard cases, for a person to check before they go into evals/cases.csv.
 
-    python -m app.recordings token --rm 1 --label "Asha's phone"   # upload token for one RM's phone
+    python -m app.recordings token --rm 4 --label "Shiwani's phone"  # upload token for one RM's phone
+    python -m app.recordings token --label "pilot phones"            # shared: each RM picks their name in the app
     python -m app.recordings tokens | revoke 3
     python -m app.recordings process                                # process everything new right now
     python -m app.recordings list
@@ -79,9 +80,10 @@ TOKEN_COLS = """t.id, t.rm_id, r.name AS rm_name, t.label, t.created_by, t.creat
                 (SELECT MAX(uploaded_at) FROM recordings WHERE token_id=t.id) AS last_upload_at"""
 
 
-def create_token(rm_id: int, label: str = "", created_by: str = "") -> dict:
-    """The token itself is returned only here; the database keeps just its hash."""
-    if not db.q("SELECT id FROM rms WHERE id=?", (rm_id,), one=True):
+def create_token(rm_id: int | None, label: str = "", created_by: str = "") -> dict:
+    """The token itself is returned only here; the database keeps just its hash.
+    rm_id=None makes a shared token: each RM picks their own name in the app, and it goes with every upload."""
+    if rm_id is not None and not db.q("SELECT id FROM rms WHERE id=?", (rm_id,), one=True):
         raise ValueError("No such RM")
     token = "ekoup_" + secrets.token_urlsafe(24)
     tid = db.x("INSERT INTO upload_tokens(token_hash,rm_id,label,created_by,created_at) VALUES(?,?,?,?,?)",
@@ -104,11 +106,28 @@ def revoke_token(token_id: int) -> bool:
 def device_for_token(token: str | None) -> dict | None:
     if not token:
         return None
-    dev = db.q("""SELECT t.*, r.name AS rm_name FROM upload_tokens t JOIN rms r ON r.id=t.rm_id
+    dev = db.q("""SELECT t.*, r.name AS rm_name FROM upload_tokens t LEFT JOIN rms r ON r.id=t.rm_id
                   WHERE t.token_hash=? AND t.revoked_at IS NULL""", (_h(token),), one=True)
     if dev:
         db.update("upload_tokens", dev["id"], last_used_at=time.time())
     return dev
+
+
+def rms_for_app() -> list[dict]:
+    """The RMs the app offers to choose from: id and first name only (no contact details)."""
+    return [{"id": r["id"], "name": r["name"]} for r in db.q("SELECT id, name FROM rms ORDER BY name")]
+
+
+def uploader_rm(device: dict, chosen: int | None) -> int:
+    """Which RM an upload belongs to. A personal token decides it (and refuses another RM's name); a shared token
+    takes the RM chosen in the app."""
+    if device.get("rm_id"):
+        if chosen and int(chosen) != device["rm_id"]:
+            raise ValueError(f"This phone's upload token belongs to {device['rm_name']}. Ask the admin for your own.")
+        return device["rm_id"]
+    if not chosen or not db.q("SELECT id FROM rms WHERE id=?", (int(chosen),), one=True):
+        raise ValueError("Choose your name (RM) in the app's setup, then try again")
+    return int(chosen)
 
 
 # ---------------------------------------------------------------- receiving files
@@ -706,7 +725,7 @@ def _cli():
     p = argparse.ArgumentParser(prog="python -m app.recordings", description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("token", help="make an upload token for one RM's phone")
-    t.add_argument("--rm", type=int, required=True)
+    t.add_argument("--rm", type=int, help="the RM's id; leave out for a shared token (each RM picks their name in the app)")
     t.add_argument("--label", default="")
     sub.add_parser("tokens", help="list upload tokens")
     rv = sub.add_parser("revoke", help="revoke an upload token")
@@ -720,8 +739,9 @@ def _cli():
     from .seed import seed_if_demo
     seed_if_demo()                           # as when the server starts
     if a.cmd == "token":
-        tok = create_token(a.rm, a.label, "cli")
-        print(f"Upload token for {tok['rm_name']} ({tok['label'] or 'no label'}). Shown only once:\n\n  {tok['token']}\n")
+        tok = create_token(a.rm or None, a.label, "cli")
+        who = tok["rm_name"] or "any RM (they choose their name in the app)"
+        print(f"Upload token for {who} ({tok['label'] or 'no label'}). Shown only once:\n\n  {tok['token']}\n")
     elif a.cmd == "tokens":
         for t in list_tokens():
             state = "revoked" if t["revoked_at"] else "active"

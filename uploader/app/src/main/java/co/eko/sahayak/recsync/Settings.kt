@@ -25,9 +25,16 @@ class Settings(context: Context) {
         get() = secure.getString("token", "") ?: ""
         set(v) = secure.edit().putString("token", v.trim()).apply()
 
+    /** The RM this phone uploads for: picked in setup, or fixed by a personal token (rmLocked). */
+    var rmId: Int
+        get() = prefs.getInt("rm_id", -1)
+        set(v) = prefs.edit().putInt("rm_id", v).apply()
     var rmName: String
         get() = prefs.getString("rm_name", "") ?: ""
         set(v) = prefs.edit().putString("rm_name", v).apply()
+    var rmLocked: Boolean
+        get() = prefs.getBoolean("rm_locked", false)
+        set(v) = prefs.edit().putBoolean("rm_locked", v).apply()
 
     /** Subscription id of the Eko SIM, plus every other id the call log may use for it (see Matcher.isEkoSim). */
     var ekoSubId: Int
@@ -69,7 +76,7 @@ class Settings(context: Context) {
         e.apply()
     }
 
-    val isConfigured get() = serverUrl.isNotEmpty() && token.isNotEmpty() && ekoAccountIds.isNotEmpty() &&
+    val isConfigured get() = serverUrl.isNotEmpty() && token.isNotEmpty() && rmId > 0 && ekoAccountIds.isNotEmpty() &&
         folderUri.isNotEmpty()
 
     // ---- last run status
