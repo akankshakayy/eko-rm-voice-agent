@@ -46,6 +46,8 @@ DAILY_AT = os.environ.get("RECORDINGS_DAILY_AT", "").strip()   # "" = process ea
 RETRY_AFTER_S = 600              # a failed recording waits 10 min, then 20, before its next try
 TZ = ZoneInfo(os.environ.get("RECORDINGS_TZ", "Asia/Kolkata"))
 LANG = os.environ.get("RECORDINGS_LANG", "hi")
+# Recorded calls aren't live, so they get Whisper's most accurate model (the live agent uses the faster turbo one)
+STT_MODEL = os.environ.get("RECORDINGS_STT_MODEL", "whisper-large-v3")
 AUDIO_EXTS = {"m4a", "mp3", "aac", "amr", "3gp", "ogg", "opus", "wav", "flac", "mp4", "webm"}
 DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 SPEAKERS = ["rm", "csp", "other", "unknown"]
@@ -366,7 +368,7 @@ def _is_rate_limit(e: Exception) -> bool:
 def process_one(r: dict):
     audio, name = _compact(os.path.join(storage_dir(), r["file_path"]))
     try:
-        segs = stt.transcribe_segments(audio, name, LANG)
+        segs = stt.transcribe_segments(audio, name, LANG, STT_MODEL)
     except Exception as e:
         if _is_rate_limit(e):
             raise RateLimited("Whisper rate limit", 300) from e

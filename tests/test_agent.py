@@ -593,7 +593,7 @@ def _fake_pipeline(monkeypatch, segs, review=None, ask=None):
     monkeypatch.setattr(stt, "available", lambda: True)
     monkeypatch.setattr(llm_engine, "provider", lambda: "groq")
     monkeypatch.setattr(recordings, "_compact", lambda path: (open(path, "rb").read(), "call.ogg"))
-    monkeypatch.setattr(stt, "transcribe_segments", lambda audio, name, lang="hi": [dict(s) for s in segs])
+    monkeypatch.setattr(stt, "transcribe_segments", lambda audio, name, lang="hi", model=None: [dict(s) for s in segs])
     monkeypatch.setattr(recordings, "_ask", ask or (lambda system, user, tool: (review, "test-model")))
 
 

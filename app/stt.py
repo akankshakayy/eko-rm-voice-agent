@@ -55,12 +55,12 @@ def transcribe(audio: bytes, filename: str, lang: str = "hi-IN") -> str:
     return (r.text or "").strip()
 
 
-def transcribe_segments(audio: bytes, filename: str, lang: str = "hi") -> list[dict]:
+def transcribe_segments(audio: bytes, filename: str, lang: str = "hi", model: str | None = None) -> list[dict]:
     """A whole call, as timed segments: [{"start": 0.0, "end": 4.2, "text": "..."}]. Whisper doesn't say who spoke."""
     audio, filename = to_supported(audio, filename)
     extra = {} if lang == "auto" else {"language": lang.split("-")[0]}
     r = _groq().with_options(timeout=300).audio.transcriptions.create(
-        model=MODEL, file=(filename, audio), temperature=0, prompt=PROMPT, response_format="verbose_json",
+        model=model or MODEL, file=(filename, audio), temperature=0, prompt=PROMPT, response_format="verbose_json",
         timestamp_granularities=["segment"], **extra)
     segs = getattr(r, "segments", None) or []
     get = lambda s, k: s.get(k) if isinstance(s, dict) else getattr(s, k, None)  # noqa: E731
