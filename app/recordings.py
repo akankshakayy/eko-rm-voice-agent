@@ -126,6 +126,8 @@ def save_upload(device: dict, data: bytes, filename: str, started_at_ms: int | N
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(data)
+    if duration_sec is None:
+        duration_sec = _probe_duration(path)
     digits = re.sub(r"\D", "", other_number or "")[-10:]
     csp = db.q("SELECT id FROM csps WHERE phone=?", (digits,), one=True) if digits else None
     try:
@@ -138,6 +140,44 @@ def save_upload(device: dict, data: bytes, filename: str, started_at_ms: int | N
         return {"id": db.q("SELECT id FROM recordings WHERE sha256=?", (sha,), one=True)["id"], "duplicate": True}
     wake()
     return {"id": rid, "duplicate": False}
+
+
+def _probe_duration(path: str) -> float | None:
+    """Length in seconds, for files added by hand (phones send it with the upload)."""
+    if not shutil.which("ffprobe"):
+        return None
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                         capture_output=True, text=True, timeout=60)
+    try:
+        return round(float(out.stdout.strip()), 1)
+    except ValueError:
+        return None
+
+
+def audio_file(rec: dict) -> str:
+    return os.path.join(storage_dir(), rec["file_path"])
+
+
+def reprocess(rec_id: int) -> bool:
+    """Run a recording through transcription and review again (after a failure, or a better model or prompt)."""
+    if not db.q("SELECT id FROM recordings WHERE id=?", (rec_id,), one=True):
+        return False
+    db.update("recordings", rec_id, status="new", attempts=0, error=None, next_try_at=None)
+    wake()
+    return True
+
+
+def delete_recording(rec_id: int) -> bool:
+    """Remove a recording and its audio file for good."""
+    r = db.q("SELECT id, file_path FROM recordings WHERE id=?", (rec_id,), one=True)
+    if not r:
+        return False
+    try:
+        os.remove(audio_file(r))
+    except FileNotFoundError:
+        pass
+    db.x("DELETE FROM recordings WHERE id=?", (rec_id,))
+    return True
 
 
 # ---------------------------------------------------------------- masking personal numbers
@@ -271,8 +311,8 @@ def review_call(segs: list[dict]) -> tuple[dict, str]:
     out, model = _ask(_review_prompt(), _review_input(segs), REVIEW_TOOL)
     speakers = [s if s in SPEAKERS else "unknown" for s in (out.get("speakers") or [])]
     out["speakers"] = (speakers + ["unknown"] * len(segs))[:len(segs)]
-    out["slots"] = {k: str(v).strip() for k, v in (out.get("slots") or {}).items()
-                    if k in SLOT_LABELS and str(v or "").strip()}
+    out["slots"] = {k: llm_engine.normalize_id(v) if k in llm_engine.ID_SLOTS else str(v).strip()
+                    for k, v in (out.get("slots") or {}).items() if k in SLOT_LABELS and str(v or "").strip()}
     try:
         i = int(out.get("issue_segment", -1))
     except (TypeError, ValueError):
@@ -299,6 +339,26 @@ def _compact(path: str) -> tuple[bytes, str]:
     return out.stdout, "call.ogg"
 
 
+_SENTENCE_END = re.compile(r"(?<=[।?!])\s+|(?<=[A-Za-z\u0900-\u097F]{3}\.)\s+")   # not after "Rs." or "2.5"
+
+
+def split_sentences(segs: list[dict]) -> list[dict]:
+    """Whisper cuts audio at pauses, not at a change of speaker, so one segment often holds the RM's question and
+    the CSP's answer. Split each segment into sentences (times shared out by length) so each can get its own speaker."""
+    out = []
+    for s in segs:
+        parts = [p.strip() for p in _SENTENCE_END.split(s["text"]) if p.strip()]
+        if len(parts) < 2:
+            out.append(s)
+            continue
+        total, t = sum(len(p) for p in parts), s["start"]
+        for p in parts:
+            end = round(t + (s["end"] - s["start"]) * len(p) / total, 2)
+            out.append({"start": round(t, 2), "end": end, "text": p})
+            t = end
+    return out
+
+
 def _is_rate_limit(e: Exception) -> bool:
     return type(e).__name__ == "RateLimitError" or getattr(e, "status_code", None) == 429
 
@@ -311,7 +371,7 @@ def process_one(r: dict):
         if _is_rate_limit(e):
             raise RateLimited("Whisper rate limit", 300) from e
         raise
-    segs = [{**s, "text": mask(s["text"])} for s in segs]
+    segs = [{**s, "text": mask(s["text"])} for s in split_sentences(segs)]
     fields = {"status": "done", "processed_at": time.time(), "attempts": r["attempts"] + 1, "error": None}
     if not segs:
         db.update("recordings", r["id"], **fields, is_csp_call=0, transcript_json=[],
@@ -426,8 +486,10 @@ def processing_loop(stop: threading.Event):
 
 
 # ---------------------------------------------------------------- reading results
-LIST_COLS = """r.id, r.rm_id, m.name AS rm_name, r.csp_id, c.name AS csp_name, r.started_at, r.duration_sec, r.direction,
-               r.uploaded_at, r.status, r.error, r.is_csp_call, r.language, r.intent, r.sentiment, r.resolution, r.summary"""
+LIST_COLS = """r.id, r.rm_id, m.name AS rm_name, r.csp_id, c.name AS csp_name, c.csp_code, r.other_number, r.started_at,
+               r.duration_sec, r.direction, r.uploaded_at, r.status, r.error, r.attempts, r.is_csp_call, r.language,
+               r.intent, r.sentiment, r.resolution, r.summary, r.orig_name,
+               CASE WHEN r.token_id IS NULL THEN 'manual' ELSE 'phone' END AS source"""
 
 
 def list_recordings(status: str | None = None, rm_id: int | None = None, limit: int = 200) -> list[dict]:
@@ -445,7 +507,7 @@ def list_recordings(status: str | None = None, rm_id: int | None = None, limit: 
 
 def get_recording(rec_id: int) -> dict | None:
     r = db.q(f"""SELECT {LIST_COLS}, r.transcript_json, r.slots_json, r.issue_segment, r.intent_confidence, r.rm_handling,
-                 r.model, r.processed_at, r.attempts FROM recordings r LEFT JOIN rms m ON m.id=r.rm_id
+                 r.model, r.processed_at, r.next_try_at FROM recordings r LEFT JOIN rms m ON m.id=r.rm_id
                  LEFT JOIN csps c ON c.id=r.csp_id WHERE r.id=?""", (rec_id,), one=True)
     if r:
         r["transcript"] = json.loads(r.pop("transcript_json") or "[]")
@@ -453,8 +515,9 @@ def get_recording(rec_id: int) -> dict | None:
     return r
 
 
-def summary_counts() -> dict:
-    rows = db.q("SELECT status, COUNT(*) AS n FROM recordings GROUP BY status")
+def summary_counts(rm_id: int | None = None) -> dict:
+    rows = db.q("SELECT status, COUNT(*) AS n FROM recordings" + (" WHERE rm_id=?" if rm_id else "") + " GROUP BY status",
+                (rm_id,) if rm_id else ())
     return {r["status"]: r["n"] for r in rows}
 
 

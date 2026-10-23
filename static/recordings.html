@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recordings · Eko Sahayak</title>
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters input { flex: 1; min-width: 200px; }
+  .upload { display: grid; gap: 10px; }
+  .upload .row { display: grid; grid-template-columns: 2fr 1.2fr 1fr 1.2fr auto; gap: 8px; align-items: end; }
+  .upload label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+  .upload input[type=file] { padding: 5px 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: var(--panel-2); }
+  .upload .row label > * { height: 38px; box-sizing: border-box; }
+  .results { display: grid; gap: 4px; font-size: 13px; }
+  .results .err { color: var(--bad); } .results .ok { color: var(--ok); }
+  @media (max-width: 900px) { .upload .row { grid-template-columns: 1fr 1fr; } }
+  td .sum { max-width: 420px; }
+  audio { width: 100%; margin: 4px 0 12px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  .lines { display: grid; gap: 2px; }
+  .line { display: grid; grid-template-columns: 52px 46px 1fr; gap: 8px; padding: 6px 8px; border-radius: var(--radius-sm); align-items: start; }
+  .line .t { font-family: var(--font-mono); font-size: 12px; color: var(--accent); background: none; border: 0; padding: 2px 0; cursor: pointer;
+    text-align: left; box-shadow: none; }
+  .line .t:hover { text-decoration: underline; filter: none; box-shadow: none; }
+  .line .who { font-size: 11px; font-weight: 700; padding: 2px 0; text-transform: uppercase; letter-spacing: .04em; }
+  .line.rm .who { color: var(--accent); } .line.csp .who { color: var(--c2); }
+  .line.other .who, .line.unknown .who { color: var(--muted); }
+  .line.csp { background: color-mix(in srgb, var(--c2) 7%, var(--panel)); }
+  .line.issue { box-shadow: inset 3px 0 0 var(--c3); }
+  .line.playing { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+  .note { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--panel-2); font-size: 13px; margin: 6px 0 12px; }
+  .note.bad { background: var(--bad-soft); color: var(--bad); }
+  .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+</style>
+</head>
+<body>
+<header class="top" id="nav"></header>
+<main>
+  <div class="kpis" id="kpis"></div>
+
+  <section class="panel" id="uploadPanel" hidden style="--tone:var(--c6);margin-bottom:16px">
+    <h2>Add recordings</h2>
+    <p class="small muted" style="margin-top:-6px">For calls you have as files (e.g. shared on WhatsApp). They are transcribed and summarised just like the ones the phones upload.
+      Each file's own date is used as the call time.</p>
+    <form class="upload" id="uploadForm">
+      <div class="row">
+        <label>Recordings<input type="file" id="uFiles" multiple accept="audio/*,.m4a,.mp3,.aac,.amr,.3gp,.ogg,.opus,.wav,.flac,.mp4,.webm" required></label>
+        <label>RM who made the calls<select id="uRm"></select></label>
+        <label>Direction<select id="uDir"><option value="unknown">Not sure</option><option value="outgoing">RM called CSP</option><option value="incoming">CSP called RM</option></select></label>
+        <label>CSP's phone (optional)<input id="uPhone" inputmode="tel" placeholder="If all files are one CSP"></label>
+        <button type="submit" id="uBtn">Upload</button>
+      </div>
+      <div class="results" id="uResults"></div>
+    </form>
+  </section>
+
+  <section class="panel" style="--tone:var(--c5)">
+    <h2>Recorded calls</h2>
+    <div class="filters">
+      <select id="fStatus"><option value="">All statuses</option><option value="done">Processed</option><option value="new">Waiting</option><option value="failed">Failed</option></select>
+      <select id="fCat"><option value="">All issue types</option></select>
+      <select id="fRm" hidden><option value="">All RMs</option></select>
+      <input id="fSearch" placeholder="Search CSP, number, summary, transcript…">
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Call time</th><th>RM</th><th>CSP</th><th>Length</th><th>Issue</th><th>Status</th><th>From</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+    </table></div>
+  </section>
+</main>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer"></aside>
+
+<script src="static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const REC_STATUS = { new: ["Waiting", "b-info"], done: ["Processed", "b-ok"], failed: ["Failed", "b-bad"] };
+const RESOLUTION = { resolved_on_call: ["Solved on the call", "b-ok"], follow_up_promised: ["Follow-up promised", "b-info"],
+  escalated: ["Escalated", "b-warn"], no_issue: ["No issue", ""], unclear: ["Outcome unclear", ""] };
+const MOOD = { positive: ["CSP happy", "b-ok"], neutral: ["CSP calm", ""], frustrated: ["CSP frustrated", "b-warn"], angry: ["CSP angry", "b-bad"] };
+const SPEAKER = { rm: "RM", csp: "CSP", other: "Other", unknown: "?" };
+let ROWS = [], RMS = [], OPEN = null, STAFF = false;
+
+const statusBadge = r => r.status === "new" && r.attempts ? `<span class="badge b-warn">Retrying</span>` : badge(REC_STATUS, r.status);
+const who = r => r.csp_name ? esc(r.csp_name) : r.other_number ? esc(r.other_number) : `<span class="muted">Unknown number</span>`;
+const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+(async () => {
+  await loadConfig();
+  const me = await loadMe();
+  STAFF = me.role === "admin" || me.role === "ops";
+  RMS = await api("api/rms");
+  $("nav").innerHTML = navHtml("recordings") + `<div class="right"><span class="small muted" id="updated"></span></div>`;
+  $("fCat").innerHTML += Object.entries(CONFIG.categories).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")
+    + `<option value="unknown">No issue / unknown</option>`;
+  if (STAFF) {
+    $("uploadPanel").hidden = false;
+    $("fRm").hidden = false;
+    const opts = RMS.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region)}</option>`).join("");
+    $("uRm").innerHTML = opts;
+    $("fRm").innerHTML += opts;
+  }
+  ["fStatus", "fCat", "fRm"].forEach(id => $(id).onchange = render);
+  $("fSearch").oninput = render;
+  $("drawerBg").onclick = closeDrawer;
+  $("uploadForm").onsubmit = upload;
+  await refresh();
+  const id = Number(location.hash.slice(1));
+  if (id) openRec(id);
+})();
+
+async function refresh() {
+  const data = await api("api/recordings?limit=1000");
+  ROWS = data.recordings;
+  const c = data.counts, done = ROWS.filter(r => r.status === "done");
+  const secs = ROWS.reduce((a, r) => a + (r.duration_sec || 0), 0);
+  $("kpis").innerHTML = [
+    ["Recordings", ROWS.length, `${fmtDur(secs)} of calls`, "--c1"],
+    ["Processed", c.done || 0, "transcript and summary ready", "--c2"],
+    ["Waiting", c.new || 0, c.new ? "being processed" : "nothing waiting", "--c6"],
+    ["Failed", c.failed || 0, c.failed ? "open one to see why" : "none", "--c4"],
+    ["CSP calls", done.filter(r => r.is_csp_call).length, "of the processed ones", "--c5"],
+  ].map(([l, v, s, t]) => `<div class="kpi" style="--tone:var(${t})"><div class="label">${l}</div><div class="value">${num(v)}</div><div class="sub">${s}</div></div>`).join("");
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  render();
+  if (OPEN) {
+    const r = ROWS.find(x => x.id === OPEN.id);
+    if (r && r.status !== OPEN.status) openRec(OPEN.id);         // finished processing while open
+  }
+  clearTimeout(refresh.t);
+  refresh.t = setTimeout(refresh, (c.new ? 8 : 30) * 1000);
+}
+
+function render() {
+  const st = $("fStatus").value, cat = $("fCat").value, rm = $("fRm").value, q = $("fSearch").value.toLowerCase();
+  const rows = ROWS.filter(r => (!st || r.status === st) && (!cat || (r.intent || "unknown") === cat) && (!rm || String(r.rm_id) === rm)
+    && (!q || JSON.stringify([r.csp_name, r.csp_code, r.other_number, r.summary, r.orig_name, r.rm_name]).toLowerCase().includes(q)));
+  $("rows").innerHTML = rows.length ? rows.map(r => `<tr class="clickable" onclick="openRec(${r.id})">
+      <td class="nowrap">${fmtTime(r.started_at || r.uploaded_at)}<div class="small muted">${r.direction === "incoming" ? "CSP called" : r.direction === "outgoing" ? "RM called" : ""}</div></td>
+      <td>${esc(r.rm_name || "–")}</td>
+      <td>${who(r)}${r.csp_code ? `<div class="small muted">${esc(r.csp_code)}</div>` : ""}</td>
+      <td class="mono nowrap">${fmtDur(r.duration_sec)}</td>
+      <td>${r.intent && r.intent !== "unknown" ? catChip(r.intent) : r.status === "done" ? '<span class="muted small">No issue</span>' : ""}
+        ${r.summary ? `<div class="small muted sum">${esc(r.summary.slice(0, 110))}</div>` : ""}</td>
+      <td>${statusBadge(r)}</td>
+      <td><span class="badge ${r.source === "phone" ? "b-accent" : ""}">${r.source === "phone" ? "Phone app" : "Added by hand"}</span></td></tr>`).join("")
+    : `<tr><td colspan="7" class="empty">${ROWS.length ? "No recordings match" : "No recordings yet. They appear here as phones upload them" + (STAFF ? ", or add some above." : ".")}</td></tr>`;
+}
+
+async function openRec(id) {
+  let r;
+  try { r = await api(`api/recordings/${id}`); } catch (e) { return; }
+  OPEN = r;
+  history.replaceState(null, "", "#" + id);
+  const res = RESOLUTION[r.resolution], mood = MOOD[r.sentiment];
+  const lines = r.transcript || [];
+  const slots = Object.entries(r.slots || {});
+  $("drawer").innerHTML = `<div class="drawer-head"><div><h2>${who(r)}</h2>
+      <div class="sub">${fmtTime(r.started_at || r.uploaded_at)} · ${esc(r.rm_name || "")} · ${fmtDur(r.duration_sec)}</div></div>
+      <button class="secondary" onclick="closeDrawer()">Close</button></div>
+    <audio id="player" controls preload="metadata" src="api/recordings/${r.id}/audio"></audio>
+    <div class="badges">${statusBadge(r)}
+      ${r.intent && r.intent !== "unknown" ? catChip(r.intent) : ""}
+      ${res ? `<span class="badge ${res[1]}">${res[0]}</span>` : ""}
+      ${mood ? `<span class="badge ${mood[1]}">${mood[0]}</span>` : ""}
+      ${r.is_csp_call === 0 ? '<span class="badge b-warn">Not a CSP work call</span>' : ""}</div>
+    ${r.status === "new" ? `<div class="note">${r.attempts ? `Last try failed: ${esc(r.error || "")}. Trying again soon.` : "Being transcribed and summarised. This page updates by itself."}</div>` : ""}
+    ${r.status === "failed" ? `<div class="note bad">Couldn't process this recording: ${esc(r.error || "unknown error")}</div>` : ""}
+    ${r.summary ? `<h3>Summary</h3><p>${esc(r.summary)}</p>` : ""}
+    ${r.rm_handling ? `<h3>How the RM handled it</h3><p>${esc(r.rm_handling)}</p>` : ""}
+    <dl class="kv">
+      ${slots.map(([k, v]) => `<dt>${esc(CONFIG.slot_labels[k] || k)}</dt><dd>${esc(v)}</dd>`).join("")}
+      ${r.intent_confidence != null ? `<dt>Issue type confidence</dt><dd>${Math.round(r.intent_confidence * 100)}%</dd>` : ""}
+      ${r.language ? `<dt>Language</dt><dd>${esc({ hi: "Hindi", hinglish: "Hinglish", en: "English" }[r.language] || r.language)}</dd>` : ""}
+      ${r.other_number ? `<dt>Other number</dt><dd>${esc(r.other_number)}</dd>` : ""}
+      <dt>Added</dt><dd>${fmtTime(r.uploaded_at)} · ${r.source === "phone" ? "by the phone app" : "by hand"}${r.orig_name ? ` · <span class="muted">${esc(r.orig_name)}</span>` : ""}</dd>
+      ${r.processed_at ? `<dt>Processed</dt><dd>${fmtTime(r.processed_at)}${r.model ? ` · <span class="muted">${esc(r.model)}</span>` : ""}</dd>` : ""}
+    </dl>
+    ${lines.length ? `<h3 style="margin-top:18px">Transcript</h3>
+      <p class="small muted" style="margin-top:-4px">Click a time to play from there. Personal numbers (Aadhaar, phone, OTP…) are hidden.${r.issue_segment >= 0 ? " The orange line is where the CSP explains the problem." : ""}</p>
+      <div class="lines" id="lines">${lines.map((l, i) => `<div class="line ${esc(l.speaker || "unknown")} ${i === r.issue_segment ? "issue" : ""}" data-s="${l.start}" data-e="${l.end}">
+        <button class="t" onclick="seek(${l.start})" aria-label="Play from ${clock(l.start)}">${clock(l.start)}</button>
+        <span class="who">${SPEAKER[l.speaker] || "?"}</span><span>${esc(l.text)}</span></div>`).join("")}</div>`
+      : r.status === "done" ? `<p class="muted">No speech was found in this recording.</p>` : ""}
+    ${STAFF ? `<div class="acts"><button class="secondary" onclick="reprocess(${r.id})">Process again</button>
+      ${ME.role === "admin" ? `<button class="danger" onclick="removeRec(${r.id})">Delete recording</button>` : ""}</div>` : ""}`;
+  $("drawer").classList.add("open"); $("drawerBg").classList.add("open");
+  const p = $("player");
+  p.ontimeupdate = () => document.querySelectorAll("#lines .line").forEach(el =>
+    el.classList.toggle("playing", p.currentTime >= +el.dataset.s && p.currentTime < +el.dataset.e));
+}
+
+function seek(t) { const p = $("player"); p.currentTime = t; p.play().catch(() => {}); }
+function closeDrawer() {
+  $("drawer").classList.remove("open"); $("drawerBg").classList.remove("open");
+  $("player")?.pause(); OPEN = null; history.replaceState(null, "", location.pathname);
+}
+async function reprocess(id) { await api(`api/recordings/${id}/reprocess`, { method: "POST" }); toast("Processing again"); await refresh(); openRec(id); }
+async function removeRec(id) {
+  if (!confirm("Delete this recording and its transcript for good?")) return;
+  await api(`api/recordings/${id}`, { method: "DELETE" }); closeDrawer(); toast("Recording deleted"); refresh();
+}
+
+async function upload(e) {
+  e.preventDefault();
+  const files = [...$("uFiles").files];
+  if (!files.length) return;
+  const fd = new FormData();
+  files.forEach(f => fd.append("audio", f, f.name));
+  fd.append("rm_id", $("uRm").value);
+  fd.append("started_at", files.map(f => f.lastModified || "").join(","));
+  fd.append("direction", $("uDir").value);
+  fd.append("other_number", $("uPhone").value.trim());
+  $("uBtn").disabled = true;
+  $("uResults").innerHTML = `<div class="muted">Uploading ${files.length} file${files.length > 1 ? "s" : ""}…</div>`;
+  try {
+    const r = await fetch("api/recordings/upload", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `Upload failed (${r.status})`);
+    const { results } = await r.json();
+    $("uResults").innerHTML = results.map(x => x.error ? `<div class="err">✗ ${esc(x.file)}: ${esc(x.error)}</div>`
+      : `<div class="ok">✓ ${esc(x.file)}${x.duplicate ? " was already here" : " added"}</div>`).join("");
+    $("uploadForm").reset();
+    refresh();
+  } catch (err) {
+    $("uResults").innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  } finally { $("uBtn").disabled = false; }
+}
+</script>
+</body>
+</html>

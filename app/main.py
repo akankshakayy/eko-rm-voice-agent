@@ -59,7 +59,7 @@ PUBLIC_PREFIXES = ("/static/",)
 DEVICE_PATHS = {"/api/uploader/ping", "/api/uploader/recordings"}   # the uploader app: upload token, not a login
 STAFF = ("admin", "ops")                       # full access to calls, dashboards and metrics
 PAGE_ROLES = {"/": ("admin", "ops", "rm"), "/call": STAFF, "/ops": STAFF, "/rm": ("admin", "ops", "rm"),
-              "/users": ("admin",)}
+              "/users": ("admin",), "/recordings": ("admin", "ops", "rm")}
 PENDING_OK = {"/pending", "/api/auth/me", "/api/auth/logout"}   # all a not-yet-approved account can reach
 
 
@@ -246,6 +246,11 @@ def rm_page():
 @app.get("/ops")
 def ops_page():
     return FileResponse(os.path.join(STATIC, "ops.html"))
+
+
+@app.get("/recordings")
+def recordings_page():
+    return FileResponse(os.path.join(STATIC, "recordings.html"))
 
 
 # ------------------------------------------------------------------ reference data
@@ -471,22 +476,77 @@ def revoke_upload_token(token_id: int):
     return {"ok": True}
 
 
-@app.get("/api/recordings", dependencies=[Depends(allow(*STAFF))])
-def list_recordings(status: str | None = None, rm_id: int | None = None, limit: int = 200):
-    return {"counts": recordings.summary_counts(), "recordings": recordings.list_recordings(status, rm_id, limit)}
+@app.get("/api/recordings", dependencies=[Depends(allow("admin", "ops", "rm"))])
+def list_recordings(request: Request, status: str | None = None, rm_id: int | None = None, limit: int = 500):
+    rm_id = rm_scope(request, rm_id)
+    return {"counts": recordings.summary_counts(rm_id), "recordings": recordings.list_recordings(status, rm_id, limit)}
 
 
-@app.get("/api/recordings/{rec_id}", dependencies=[Depends(allow(*STAFF))])
-def get_recording(rec_id: int):
+def _own_recording(request: Request, rec_id: int) -> dict:
     r = recordings.get_recording(rec_id)
     if not r:
         raise HTTPException(404, "Recording not found")
+    check_rm_owns(request, r["rm_id"], "Recording")
     return r
+
+
+@app.get("/api/recordings/{rec_id}", dependencies=[Depends(allow("admin", "ops", "rm"))])
+def get_recording(rec_id: int, request: Request):
+    return _own_recording(request, rec_id)
+
+
+@app.get("/api/recordings/{rec_id}/audio", dependencies=[Depends(allow("admin", "ops", "rm"))])
+def recording_audio(rec_id: int, request: Request):
+    _own_recording(request, rec_id)
+    row = db.q("SELECT file_path FROM recordings WHERE id=?", (rec_id,), one=True)
+    path = recordings.audio_file(row)
+    if not os.path.exists(path):
+        raise HTTPException(404, "The audio file is missing")
+    return FileResponse(path)
+
+
+@app.post("/api/recordings/upload")
+def upload_recordings(audio: list[UploadFile] = File(...), rm_id: int = Form(...), started_at: str = Form(""),
+                      direction: str = Form("unknown"), other_number: str = Form(""), actor=Depends(allow(*STAFF))):
+    """Add recordings by hand (e.g. calls shared on WhatsApp). They go through the same processing as phone uploads.
+    started_at: one epoch-ms value per file, comma-separated (the page sends each file's own date)."""
+    if not db.q("SELECT id FROM rms WHERE id=?", (rm_id,), one=True):
+        raise HTTPException(400, "Choose the RM who made these calls")
+    times = [t.strip() for t in started_at.split(",")]
+    results = []
+    for i, f in enumerate(audio):
+        data = f.file.read(recordings.MAX_BYTES + 1)
+        name = f.filename or "recording"
+        if len(data) > recordings.MAX_BYTES:
+            results.append({"file": name, "error": "Over 100 MB"})
+            continue
+        t = times[i] if i < len(times) else ""
+        try:
+            r = recordings.save_upload({"rm_id": rm_id, "id": None}, data, name, int(t) if t.isdigit() else None,
+                                       None, direction, other_number, f"manual: {actor.get('name') or ''}"[:64])
+            results.append({"file": name, **r})
+        except ValueError as e:
+            results.append({"file": name, "error": str(e)})
+    return {"results": results}
+
+
+@app.post("/api/recordings/{rec_id}/reprocess", dependencies=[Depends(allow(*STAFF))])
+def reprocess_recording(rec_id: int):
+    if not recordings.reprocess(rec_id):
+        raise HTTPException(404, "Recording not found")
+    return {"ok": True}
+
+
+@app.delete("/api/recordings/{rec_id}", dependencies=[Depends(allow("admin"))])
+def delete_recording(rec_id: int):
+    if not recordings.delete_recording(rec_id):
+        raise HTTPException(404, "Recording not found")
+    return {"ok": True}
 
 
 @app.post("/api/recordings/process", dependencies=[Depends(allow(*STAFF))])
 def process_recordings():
-    """Run the daily processing now instead of waiting for RECORDINGS_DAILY_AT."""
+    """Process waiting recordings now (normally they are processed as they arrive)."""
     threading.Thread(target=recordings.process_pending, daemon=True, name="recordings-now").start()
     return {"started": True, "waiting": recordings.summary_counts().get("new", 0)}
 

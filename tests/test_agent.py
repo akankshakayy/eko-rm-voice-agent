@@ -818,3 +818,52 @@ def test_pages_work_under_an_address_prefix():
     assert urljoin("https://indev.eko.in/rm-voice-agent/rm", loc) == "https://indev.eko.in/rm-voice-agent/login?next=rm"
     loc = c.get("/", follow_redirects=False).headers["location"]
     assert urljoin("https://indev.eko.in/rm-voice-agent/", loc).startswith("https://indev.eko.in/rm-voice-agent/login")
+
+
+def test_recordings_page_manual_upload_audio_and_rm_scope(monkeypatch):
+    from app import recordings
+    admin = _client()
+    files = [("audio", ("call one.m4a", b"first fake audio")), ("audio", ("call two.opus", b"second fake audio")),
+             ("audio", ("notes.pdf", b"not audio"))]
+    r = admin.post("/api/recordings/upload", files=files,
+                   data={"rm_id": "2", "started_at": "1792560000000,,", "direction": "outgoing", "other_number": ""})
+    res = r.json()["results"]
+    assert [bool(x.get("error")) for x in res] == [False, False, True]
+    assert admin.get("/recordings").status_code == 200
+    rows = admin.get("/api/recordings").json()["recordings"]
+    assert {x["source"] for x in rows} == {"manual"} and {x["rm_id"] for x in rows} == {2}
+    first = next(x for x in rows if x["orig_name"] == "call one.m4a")
+    assert first["started_at"] == 1792560000
+    assert admin.get(f"/api/recordings/{first['id']}/audio").content == b"first fake audio"
+    # An RM sees only their own recordings, and can't upload or reprocess
+    rm1 = _client(email="rm3@eko.test", rm_id=3)
+    uid = next(u["id"] for u in admin.get("/api/users").json() if u["email"] == "rm3@eko.test")
+    admin.patch(f"/api/users/{uid}", json={"role": "rm", "rm_id": 3})
+    assert rm1.get("/api/recordings").json()["recordings"] == []
+    assert rm1.get(f"/api/recordings/{first['id']}").status_code == 404
+    assert rm1.get(f"/api/recordings/{first['id']}/audio").status_code == 404
+    assert rm1.post(f"/api/recordings/{first['id']}/reprocess").status_code == 403
+    # Process, then process again; admin deletes
+    _fake_pipeline(monkeypatch, SEGS, REVIEW)
+    recordings.process_pending()
+    assert admin.get(f"/api/recordings/{first['id']}").json()["status"] == "done"
+    assert admin.post(f"/api/recordings/{first['id']}/reprocess").status_code == 200
+    assert admin.get(f"/api/recordings/{first['id']}").json()["status"] == "new"
+    assert admin.delete(f"/api/recordings/{first['id']}").status_code == 200
+    assert admin.get(f"/api/recordings/{first['id']}").status_code == 404
+
+
+def test_segments_are_split_into_sentences_before_speakers_are_labelled():
+    from app.recordings import split_sentences
+    segs = split_sentences([{"start": 0.0, "end": 12.0, "text": "बताइए क्या हुआ। सर मेरा DMT फेल हो गया।"},
+                            {"start": 12.0, "end": 14.0, "text": "Rs. 2.5 lakh"}])
+    assert [s["text"] for s in segs] == ["बताइए क्या हुआ।", "सर मेरा DMT फेल हो गया।", "Rs. 2.5 lakh"]
+    assert segs[0]["start"] == 0.0 and segs[0]["end"] == segs[1]["start"] and segs[1]["end"] == 12.0
+
+
+def test_ids_read_out_in_pieces_are_joined_up():
+    from app.llm_engine import _clean_slots, normalize_id
+    assert normalize_id("TXN 482-913-577") == "TXN482913577"
+    assert normalize_id("४१२ ३९८ ७६५ ४३२") == "412398765432"
+    assert normalize_id("not known") == "not known"
+    assert _clean_slots({"utr_or_ref": "4123 9876 5432", "amount": "5 000"}) == {"utr_or_ref": "412398765432", "amount": "5 000"}

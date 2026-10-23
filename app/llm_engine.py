@@ -132,6 +132,17 @@ def _build_messages(state: dict, user_text: str) -> list[dict]:
     return messages
 
 
+ID_SLOTS = ("txn_id", "utr_or_ref")
+_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+
+def normalize_id(value: str) -> str:
+    """IDs read out in pieces come back as "TXN 482-913-577" or "४१२ ३९८"; joined up they match the real ID.
+    Anything that isn't an ID once joined ("not known") is left alone."""
+    joined = "".join(str(value).translate(_DEVANAGARI_DIGITS).split()).replace("-", "").replace(".", "").upper()
+    return joined if len(joined) >= 6 and joined.isalnum() and any(ch.isdigit() for ch in joined) else str(value).strip()
+
+
 def _clean_slots(raw) -> dict:
     """Models sometimes garble a key ("payment_mode NEFT"); map it back to the slot it starts with."""
     out = {}
@@ -141,7 +152,7 @@ def _clean_slots(raw) -> dict:
         key = str(k).strip()
         if key not in SLOT_LABELS:
             key = next((s for s in SLOT_LABELS if key.lower().startswith(s)), key)
-        out[key] = str(v).strip()
+        out[key] = normalize_id(v) if key in ID_SLOTS else str(v).strip()
     return out
 
 

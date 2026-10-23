@@ -45,7 +45,8 @@ async function signOut() {
 
 // Which roles can open each page (the server enforces the same rules)
 const PAGES = [["call", "Call console", ["admin", "ops"]], ["rm", "RM dashboard", ["admin", "ops", "rm"]],
-  ["ops", "Agent & model performance", ["admin", "ops"]], ["users", "Users", ["admin"]]];
+  ["recordings", "Recordings", ["admin", "ops", "rm"]], ["ops", "Agent & model performance", ["admin", "ops"]],
+  ["users", "Users", ["admin"]]];
 const canSee = (u, path) => PAGES.find(p => p[0] === path)?.[2].includes(u.role);
 
 // ---------------------------------------------------------------- theme (light / dark, remembered per browser)
