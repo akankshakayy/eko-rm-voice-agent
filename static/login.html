@@ -41,7 +41,11 @@
   .auth button[type=submit] { width: 100%; padding: 11px; margin-top: 6px; font-size: 15px; }
   .auth .switch { margin-top: 18px; }
   .auth .err { color: var(--bad); background: var(--bad-soft); border-radius: var(--radius-sm); padding: 9px 12px; font-weight: 600; font-size: 13px; }
-  .auth .err:empty { display: none; }
+  .auth .err:empty, .auth .ok:empty { display: none; }
+  .auth .ok { color: var(--ok); background: var(--ok-soft); border-radius: var(--radius-sm); padding: 9px 12px; font-weight: 600; font-size: 13px; }
+  .auth label[hidden], .auth a[hidden], .auth button[hidden] { display: none; }
+  .pwlabel { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .pwlabel a { font-weight: 600; }
   .hint { font-weight: 400; }
   @media (max-width: 760px) { .shell { grid-template-columns: 1fr; } .side { display: none; } .auth { padding: 30px 22px; } .auth .brand { display: flex; } }
 </style>
@@ -67,12 +71,14 @@
   <div class="panel">
     <form id="form" novalidate>
       <div class="err" id="err" role="alert"></div>
+      <div class="ok" id="ok" role="status"></div>
       <label id="nameRow">Full name<input id="name" autocomplete="name" maxlength="100"></label>
-      <label>Email<input id="email" type="email" autocomplete="email" required></label>
-      <label>Password<input id="password" type="password" required>
-        <span class="small muted hint" id="pwHint">At least 8 characters</span></label>
-      <label id="roleRow">I am<select id="rm"></select>
-        <span class="small muted hint">If you're an RM, pick your profile. An admin approves new accounts and sets your access.</span></label>
+      <label id="emailRow">Email<input id="email" type="email" autocomplete="email" required>
+        <span class="small muted hint" id="emailHint"></span></label>
+      <label id="pwRow"><span class="pwlabel"><span id="pwLabel">Password</span><a href="forgot" id="forgotLink" class="small">Forgot password?</a></span>
+        <input id="password" type="password" required maxlength="256">
+        <span class="small muted hint" id="pwHint"></span></label>
+      <label id="pw2Row">Type it again<input id="password2" type="password" autocomplete="new-password" maxlength="256"></label>
       <button type="submit" id="submit"></button>
     </form>
   </div>
@@ -81,51 +87,100 @@
 </div>
 <script>
 const $ = id => document.getElementById(id);
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const SIGNUP = /\/signup$/.test(location.pathname);
+const MODE = (location.pathname.match(/\/(signup|forgot|reset|verify-email)$/) || [, "login"])[1];
 const params = new URLSearchParams(location.search);
+// Reset/verify links carry a one-time token: read it, then take it out of the address bar and history
+const TOKEN = params.get("token") || "";
+if (TOKEN) history.replaceState(null, "", location.pathname);
 // Only follow same-site paths after signing in (an absolute path, a page name or ./), never another site
 const safe = v => /^(\/(?!\/)|\.\/|[a-z])/.test(v) && !/[:\\]|\/\//.test(v);
 const next = safe(params.get("next") || "") ? params.get("next") : "./";
 const keep = params.get("next") ? `?next=${encodeURIComponent(next)}` : "";
+let OPTS = { email: false, min_password: 10, domains: [] };
 
-document.title = (SIGNUP ? "Create account" : "Sign in") + " · Eko Sahayak";
-$("heading").textContent = SIGNUP ? "Create your account" : "Welcome back";
-$("sub").textContent = SIGNUP ? "An admin approves new accounts before they can sign in." : "Sign in to the voice agent console";
-$("submit").textContent = SIGNUP ? "Create account" : "Sign in";
-$("nameRow").hidden = $("roleRow").hidden = $("pwHint").hidden = !SIGNUP;
-$("password").autocomplete = SIGNUP ? "new-password" : "current-password";
-$("switch").innerHTML = SIGNUP
-  ? `Already have an account? <a href="login${keep}">Sign in</a>`
-  : `New here? <a href="signup${keep}">Create an account</a>`;
+const TEXT = {
+  login: ["Sign in", "Welcome back", "Sign in to the voice agent console", "Sign in"],
+  signup: ["Create account", "Create your account", "Use your work email. An admin approves new accounts before they can sign in.", "Create account"],
+  forgot: ["Forgot password", "Reset your password", "We'll email you a link to choose a new password.", "Send reset link"],
+  "verify-email": ["Confirm email", "Confirming your email…", "", ""],
+  reset: ["New password", "Choose a new password", "You'll be signed out everywhere and can sign in with the new one.", "Save new password"],
+};
+const [title, heading, sub, button] = TEXT[MODE];
+document.title = `${title} · Eko Sahayak`;
+$("heading").textContent = heading;
+$("sub").textContent = sub;
+$("submit").textContent = button;
+$("nameRow").hidden = MODE !== "signup";
+$("emailRow").hidden = MODE === "reset" || MODE === "verify-email";
+$("pwRow").hidden = MODE === "forgot" || MODE === "verify-email";
+$("pw2Row").hidden = MODE !== "reset";
+$("forgotLink").hidden = MODE !== "login";
+$("pwLabel").textContent = MODE === "reset" ? "New password" : "Password";
+$("password").autocomplete = MODE === "login" ? "current-password" : "new-password";
+$("submit").hidden = MODE === "verify-email";
+$("switch").innerHTML = MODE === "login" ? `New here? <a href="signup${keep}">Create an account</a>`
+  : MODE === "signup" ? `Already have an account? <a href="login${keep}">Sign in</a>`
+  : `<a href="login">Back to sign in</a>`;
 
-if (SIGNUP) {
-  fetch("api/auth/rms").then(r => r.json()).then(rms => {
-    $("rm").innerHTML = rms.map(r => `<option value="${r.id}">RM: ${esc(r.name)} · ${esc(r.region)}</option>`).join("")
-      + `<option value="">Ops / other (not an RM)</option>`;
-  });
+const show = (id, msg) => { $("err").textContent = ""; $("ok").textContent = ""; $(id).textContent = msg; };
+const detail = async r => { const j = await r.json().catch(() => ({})); return typeof j.detail === "string" ? j.detail : "Please check the details and try again"; };
+const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+fetch("api/auth/options").then(r => r.json()).then(o => {
+  OPTS = o;
+  if (MODE === "signup" || MODE === "reset") $("pwHint").textContent = `At least ${o.min_password} characters. A short sentence works well.`;
+  if (MODE === "signup" && o.domains.length) $("emailHint").textContent = `Work email only (${o.domains.map(d => "@" + d).join(", ")}). If it's the email on the RM calling sheet, your RM profile is linked once you confirm it.`;
+  if (MODE === "forgot" && !o.email) $("sub").textContent = "Email isn't set up on this server yet, so ask an admin for a reset link. They can make one on the Users page.";
+}).catch(() => {});
+
+if (MODE === "verify-email") {
+  (async () => {
+    if (!TOKEN) return show("err", "This link is incomplete. Open it again from the email.");
+    const r = await post("api/auth/verify", { token: TOKEN });
+    if (!r.ok) { $("heading").textContent = "Couldn't confirm"; return show("err", await detail(r)); }
+    const u = await r.json();
+    $("heading").textContent = "Email confirmed";
+    show("ok", `Thanks, ${u.name}. ${u.email} is confirmed` + (u.rm_name ? ` and linked to RM ${u.rm_name}.` : "."));
+    $("switch").innerHTML = `<a href="./">Continue</a>`;
+  })();
 }
-(SIGNUP ? $("name") : $("email")).focus();
+if (MODE === "reset" && !TOKEN) show("err", "This link is incomplete. Open it again from the email, or ask for a new one.");
+($("nameRow").hidden ? ($("emailRow").hidden ? $("password") : $("email")) : $("name")).focus();
 
 $("form").onsubmit = async e => {
   e.preventDefault();
-  $("err").textContent = "";
-  const body = { email: $("email").value.trim(), password: $("password").value };
-  if (SIGNUP) {
-    body.name = $("name").value.trim();
-    body.rm_id = $("rm").value ? Number($("rm").value) : null;
-    if (!body.name) return ($("err").textContent = "Enter your name");
-    if (body.password.length < 8) return ($("err").textContent = "Password must be at least 8 characters");
+  show("err", "");
+  const email = $("email").value.trim(), password = $("password").value;
+  let path, body;
+  if (MODE === "login") { path = "api/auth/login"; body = { email, password }; }
+  if (MODE === "signup") {
+    body = { email, password, name: $("name").value.trim() }; path = "api/auth/signup";
+    if (!body.name) return show("err", "Enter your name");
+    if (password.length < OPTS.min_password) return show("err", `Password must be at least ${OPTS.min_password} characters`);
+  }
+  if (MODE === "forgot") { path = "api/auth/forgot"; body = { email }; if (!email) return show("err", "Enter your email"); }
+  if (MODE === "reset") {
+    path = "api/auth/reset"; body = { token: TOKEN, password };
+    if (password.length < OPTS.min_password) return show("err", `Password must be at least ${OPTS.min_password} characters`);
+    if (password !== $("password2").value) return show("err", "The two passwords don't match");
   }
   $("submit").disabled = true;
   try {
-    const r = await fetch(SIGNUP ? "api/auth/signup" : "api/auth/login", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (r.ok) return location.replace(next);
-    const j = await r.json().catch(() => ({}));
-    $("err").textContent = typeof j.detail === "string" ? j.detail : "Please check the details and try again";
+    const r = await post(path, body);
+    if (r.ok) {
+      if (MODE === "forgot") {
+        $("form").reset();
+        show("ok", OPTS.email ? "If there's an account for that email, a reset link is on its way. It works for 30 minutes."
+          : "Email isn't set up on this server yet. Ask an admin for a reset link.");
+      } else if (MODE === "reset") {
+        $("form").hidden = true;
+        $("heading").textContent = "Password changed";
+        $("sub").innerHTML = `You've been signed out everywhere. <a href="login">Sign in</a> with your new password.`;
+        return;
+      } else return location.replace(next);
+    } else show("err", await detail(r));
   } catch (err) {
-    $("err").textContent = "Couldn't reach the server. Try again.";
+    show("err", "Couldn't reach the server. Try again.");
   }
   $("submit").disabled = false;
 };

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blocks commits that would put real CSP/RM data or credentials on GitHub.
+# Install once per clone:  cp deploy/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+files=$(git diff --cached --name-only --diff-filter=ACMR)
+bad=$(echo "$files" |
+      grep -iE '\.(xlsx|xls|xlsm|ods|csv|db|sqlite3?|m4a|mp3|wav|amr|ogg|aac|3gp|pem|key|p12|jks|keystore)$|^data/|^evals/audio/|(^|/)\.env$|(^|/)\.env\.[^e]' |
+      grep -vx 'evals/cases.csv')
+if [ -n "$bad" ]; then
+    echo "Commit blocked - these files may hold real CSP/RM data or secrets and must stay off GitHub:" >&2
+    echo "$bad" | sed 's/^/  /' >&2
+    exit 1
+fi
+# Keys pasted into code: Groq, Anthropic, Google, Sarvam-style, OpenAI, GitHub, AWS, upload tokens, private keys
+secrets=$(git diff --cached -U0 --diff-filter=ACMR | grep '^+' | grep -v '^+++' |
+          grep -nE 'gsk_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|sk-[A-Za-z0-9]{32,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|ekoup_[A-Za-z0-9_-]{20,}|ekosk_[A-Za-z0-9_-]{20,}|BEGIN [A-Z ]*PRIVATE KEY|(PASSWORD|API_KEY|SECRET|TOKEN)=[^ $]{8,}')
+if [ -n "$secrets" ]; then
+    echo "Commit blocked - this looks like a key or password being committed:" >&2
+    echo "$secrets" | cut -c1-80 | sed 's/^/  /' >&2
+    exit 1
+fi

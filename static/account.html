@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Account · Eko Sahayak</title>
+<link rel="icon" href="favicon.ico" sizes="48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="static/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="static/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="static/common.css">
+<script>try{var t=localStorage.getItem("eko-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+  main { max-width: 860px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid .wide { grid-column: 1 / -1; }
+  form { display: grid; gap: 12px; }
+  form label { display: grid; gap: 6px; font-weight: 600; font-size: 13px; }
+  form input { width: 100%; padding: 9px 12px; font-weight: 400; }
+  form button { justify-self: start; }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 14px; margin: 0; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .msg { min-height: 18px; font-size: 13px; font-weight: 600; }
+  .msg:empty { display: none; }
+  .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+  .events { display: grid; gap: 6px; font-size: 13px; }
+  .events div { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .events div:last-child { border-bottom: 0; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } .events div { grid-template-columns: 1fr; gap: 2px; } }
+</style>
+</head>
+<body>
+<header class="top" id="nav"></header>
+<main>
+  <div class="grid">
+    <section class="panel wide" style="--tone:var(--c5)">
+      <h2>Your account</h2>
+      <dl class="facts" id="facts"><dt>Loading…</dt><dd></dd></dl>
+      <div class="msg" id="factsMsg"></div>
+    </section>
+    <section class="panel" style="--tone:var(--c1)">
+      <h2>Change password</h2>
+      <form id="pwForm" novalidate>
+        <label>Current password<input id="pwCurrent" type="password" autocomplete="current-password" maxlength="256"></label>
+        <label>New password<input id="pwNew" type="password" autocomplete="new-password" maxlength="256">
+          <span class="small muted" id="pwHint" style="font-weight:400"></span></label>
+        <label>Type it again<input id="pwNew2" type="password" autocomplete="new-password" maxlength="256"></label>
+        <div class="msg" id="pwMsg"></div>
+        <button type="submit">Change password</button>
+      </form>
+      <p class="small muted">Your other devices are signed out when the password changes.</p>
+    </section>
+    <section class="panel" style="--tone:var(--c6)">
+      <h2>Change email</h2>
+      <form id="emForm" novalidate>
+        <label>New email<input id="emNew" type="email" autocomplete="email"></label>
+        <label>Your password<input id="emPw" type="password" autocomplete="current-password" maxlength="256"></label>
+        <div class="msg" id="emMsg"></div>
+        <button type="submit">Send confirmation link</button>
+      </form>
+      <p class="small muted">The email changes only after you open the link sent to the new address. If it's the email the RM
+        calling sheet has for you, your RM profile is linked too.</p>
+    </section>
+    <section class="panel wide" style="--tone:var(--c3)">
+      <h2>Sign-in activity <span class="small muted" id="sessions"></span></h2>
+      <div class="events" id="events"><p class="muted">Loading…</p></div>
+      <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap">
+        <button class="secondary" id="everywhere">Sign out everywhere</button>
+      </div>
+      <p class="small muted">Use this if you signed in on a shared computer or lost a phone. Anything here you don't recognise?
+        Change your password and tell your admin.</p>
+    </section>
+  </div>
+</main>
+<script src="static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const EVENT = { login: "Signed in", login_failed: "Wrong password", login_locked: "Blocked after too many tries",
+  signup: "Account created", password_changed: "Password changed", password_change_failed: "Wrong current password",
+  password_reset: "Password reset by link", reset_requested: "Reset link asked for", reset_link_made: "Admin made a reset link",
+  email_verified: "Email confirmed", email_change_requested: "Email change asked for", email_changed: "Email changed",
+  rm_linked: "Linked to RM profile", role_changed: "Access changed", signed_out_everywhere: "Signed out everywhere" };
+let OPTS = { email: false, min_password: 10 };
+const errText = e => (e.message.match(/"detail":"([^"]+)"/) || [, "Something went wrong. Try again."])[1];
+const say = (id, text, ok) => { $(id).className = "msg " + (ok ? "ok" : "err"); $(id).textContent = text; };
+
+async function load() {
+  ME = null;
+  const u = await loadMe();
+  $("nav").innerHTML = navHtml("account");
+  const verified = u.email_verified ? `<span class="badge b-ok">confirmed</span>`
+    : `<span class="badge b-warn">not confirmed</span>` + (OPTS.email ? ` <button class="secondary small" id="resend">Send link again</button>` : "");
+  $("facts").innerHTML = `<dt>Name</dt><dd>${esc(u.name)}</dd><dt>Email</dt><dd>${esc(u.email)} ${verified}</dd>
+    <dt>Access</dt><dd>${esc(u.role_label)}</dd><dt>RM profile</dt><dd>${u.rm_name ? esc(u.rm_name) : '<span class="muted">none</span>'}</dd>`;
+  $("resend")?.addEventListener("click", async () => {
+    try { const r = await api("api/auth/verify/resend", { method: "POST" }); say("factsMsg", r.sent ? `Link sent to ${u.email}.` : "Couldn't send a link right now.", r.sent); }
+    catch (e) { say("factsMsg", errText(e)); }
+  });
+  if (!OPTS.email) $("emForm").querySelector("button").disabled = true, say("emMsg", "Email isn't set up on this server yet; an admin can change it for you.");
+  const a = await api("api/auth/activity");
+  $("sessions").textContent = `· signed in on ${a.sessions} device${a.sessions === 1 ? "" : "s"}`;
+  $("events").innerHTML = a.events.map(e => `<div><span class="muted">${fmtTime(e.ts)}</span><span>${esc(EVENT[e.event] || e.event)}</span>
+    <span class="small muted">${esc(e.ip || "")}</span></div>`).join("") || `<p class="muted">Nothing yet.</p>`;
+}
+
+$("pwForm").onsubmit = async e => {
+  e.preventDefault();
+  const body = { current: $("pwCurrent").value, new: $("pwNew").value };
+  if (body.new.length < OPTS.min_password) return say("pwMsg", `Use at least ${OPTS.min_password} characters`);
+  if (body.new !== $("pwNew2").value) return say("pwMsg", "The two new passwords don't match");
+  try { await api("api/auth/password", { method: "POST", body }); $("pwForm").reset(); say("pwMsg", "Password changed.", true); load(); }
+  catch (err) { say("pwMsg", errText(err)); }
+};
+
+$("emForm").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await api("api/auth/email", { method: "POST", body: { email: $("emNew").value.trim(), password: $("emPw").value } });
+    say("emMsg", `Open the link we sent to ${$("emNew").value.trim()} to finish.`, true); $("emForm").reset();
+  } catch (err) { say("emMsg", errText(err)); }
+};
+
+$("everywhere").onclick = async () => {
+  if (!confirm("Sign out on every device, including this one?")) return;
+  await fetch("api/auth/logout-all", { method: "POST" });
+  location.href = "login";
+};
+
+fetch("api/auth/options").then(r => r.json()).then(o => { OPTS = o; $("pwHint").textContent = `At least ${o.min_password} characters.`; })
+  .catch(() => {}).finally(load);
+</script>
+</body>
+</html>

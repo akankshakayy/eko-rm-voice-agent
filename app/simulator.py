@@ -18,9 +18,21 @@ from datetime import datetime, timedelta
 
 from . import agent, db
 from .agent import IST
-from .seed import seed
+from .seed import has_real_data, seed
 
 R = random.Random()
+
+
+class RealDataError(RuntimeError):
+    pass
+
+
+def _demo_only():
+    """Simulated calls and tickets must never be attached to real CSPs."""
+    if has_real_data():
+        raise RealDataError("This database holds real CSPs, so the simulator is off. "
+                            "Run it on the demo database: EKO_DB_PATH=data/demo.db DEMO_DATA=1")
+    seed()
 
 
 def _txn():
@@ -104,7 +116,7 @@ def play_call(ts=None, pace=None, engine="rules"):
     """Play one simulated call. ts=None -> real time. pace=(min,max) seconds between turns when live."""
     agent.force_engine("rules" if engine == "rules" else None)
     _, truth, direction, opener, facts, extra = _pick()
-    csp = R.choice(db.q("SELECT * FROM csps"))
+    csp = R.choice(db.q("SELECT * FROM csps WHERE source='demo'"))
     clock = [ts]
 
     def tick():
@@ -158,7 +170,7 @@ def _rm_actions(cid, truth, created_ts, now):
 
 
 def run_backfill(n=120, days=7, engine="rules"):
-    seed()
+    _demo_only()
     now = db.now()
     made = []
     for _ in range(n):
@@ -174,7 +186,7 @@ def run_backfill(n=120, days=7, engine="rules"):
 
 
 def run_live(n=5, engine="rules"):
-    seed()
+    _demo_only()
     threads = []
     for i in range(n):
         th = threading.Thread(target=play_call, kwargs={"pace": (2.5, 5.0), "engine": engine}, daemon=True)

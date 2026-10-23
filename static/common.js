@@ -84,8 +84,8 @@ function navHtml(active) {
     document.querySelectorAll("header.top nav a").forEach(a => { if (!canSee(u, a.getAttribute("href"))) a.remove(); });
     const box = document.getElementById("userBox");
     const role = u.role === "rm" ? `RM, ${esc(u.rm_region || "")}` : esc(u.role_label);
-    if (box) box.innerHTML = `<span class="who" title="${esc(u.email)}"><span class="avatar" aria-hidden="true">${esc(initials(u.name))}</span>
-        <span class="who-text"><b>${esc(u.name)}</b><span>${role}</span></span></span>
+    if (box) box.innerHTML = `<a class="who" href="account" title="Your account: ${esc(u.email)}"><span class="avatar" aria-hidden="true">${esc(initials(u.name))}</span>
+        <span class="who-text"><b>${esc(u.name)}</b><span>${role}</span></span></a>
       <button class="secondary icon-btn theme-btn" onclick="toggleTheme()" title="Switch light / dark" aria-label="Switch light or dark theme">${themeIcon()}</button>
       <button class="secondary small" onclick="signOut()">Sign out</button>`;
   }).catch(() => {}));

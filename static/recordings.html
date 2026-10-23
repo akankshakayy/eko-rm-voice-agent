@@ -24,7 +24,12 @@
   audio { width: 100%; margin: 4px 0 12px; }
   .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
   .lines { display: grid; gap: 2px; }
-  .line { display: grid; grid-template-columns: 52px 46px 1fr; gap: 8px; padding: 6px 8px; border-radius: var(--radius-sm); align-items: start; }
+  .line { display: grid; grid-template-columns: 52px 92px 1fr; gap: 8px; padding: 6px 8px; border-radius: var(--radius-sm); align-items: start; }
+  .line .who small { display: block; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--muted); }
+  .line[data-v="1"] .who { color: var(--accent); } .line[data-v="2"] .who { color: var(--c2); }
+  .line[data-v="3"] .who { color: var(--c7); } .line[data-v="4"] .who { color: var(--c5); }
+  .line[data-v="2"] { background: color-mix(in srgb, var(--c2) 7%, var(--panel)); }
+  .line[data-v="3"] { background: color-mix(in srgb, var(--c7) 7%, var(--panel)); }
   .line .t { font-family: var(--font-mono); font-size: 12px; color: var(--accent); background: none; border: 0; padding: 2px 0; cursor: pointer;
     text-align: left; box-shadow: none; }
   .line .t:hover { text-decoration: underline; filter: none; box-shadow: none; }
@@ -36,6 +41,15 @@
   .line.playing { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
   .note { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--panel-2); font-size: 13px; margin: 6px 0 12px; }
   .note.bad { background: var(--bad-soft); color: var(--bad); }
+  .downloads { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+  .downloads a { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--panel); font-size: 13px; font-weight: 600; }
+  .downloads a:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+  .report { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 16px 12px; margin: 8px 0 16px;
+    background: var(--panel-2); line-height: 1.55; }
+  .report h2 { font-size: 15px; margin: 16px 0 6px; } .report h3 { font-size: 13.5px; margin: 12px 0 4px; }
+  .report ul { margin: 4px 0; padding-left: 20px; } .report li { margin: 3px 0; } .report p { margin: 6px 0; }
+  .report-meta { font-size: 12px; color: var(--muted); margin-top: -4px; }
   .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
 </style>
 </head>
@@ -86,6 +100,13 @@ const RESOLUTION = { resolved_on_call: ["Solved on the call", "b-ok"], follow_up
   escalated: ["Escalated", "b-warn"], no_issue: ["No issue", ""], unclear: ["Outcome unclear", ""] };
 const MOOD = { positive: ["CSP happy", "b-ok"], neutral: ["CSP calm", ""], frustrated: ["CSP frustrated", "b-warn"], angry: ["CSP angry", "b-bad"] };
 const SPEAKER = { rm: "RM", csp: "CSP", other: "Other", unknown: "?" };
+// Voices separated from the sound (A, B, C…) are shown as Speaker 1, 2, 3…; RM/CSP only on RM–CSP calls
+const voiceNo = l => l.voice ? l.voice.charCodeAt(0) - 64 : null;
+function whoLabel(l, r) {
+  const n = voiceNo(l), role = r.is_csp_call && l.speaker && l.speaker !== "unknown" ? SPEAKER[l.speaker] : "";
+  if (n) return `Speaker ${n}${role ? `<small>${role}</small>` : ""}`;
+  return SPEAKER[l.speaker] || "?";
+}
 let ROWS = [], RMS = [], OPEN = null, STAFF = false;
 
 const statusBadge = r => r.status === "new" && r.attempts ? `<span class="badge b-warn">Retrying</span>` : badge(REC_STATUS, r.status);
@@ -104,7 +125,7 @@ const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
     $("uploadPanel").hidden = false;
     $("fRm").hidden = false;
     const opts = RMS.map(r => `<option value="${r.id}">${esc(r.name)} · ${esc(r.region)}</option>`).join("");
-    $("uRm").innerHTML = opts;
+    $("uRm").innerHTML = opts + `<option value="0">No RM (not an RM call)</option>`;
     $("fRm").innerHTML += opts;
   }
   ["fStatus", "fCat", "fRm"].forEach(id => $(id).onchange = render);
@@ -133,9 +154,11 @@ async function refresh() {
   if (OPEN) {
     const r = ROWS.find(x => x.id === OPEN.id);
     if (r && r.status !== OPEN.status) openRec(OPEN.id);         // finished processing while open
+    else if (OPEN.status === "done" && !OPEN.report_md && !OPEN.report_error && OPEN.transcript?.length) openRec(OPEN.id);
   }
   clearTimeout(refresh.t);
-  refresh.t = setTimeout(refresh, (c.new ? 8 : 30) * 1000);
+  const writing = OPEN && OPEN.status === "done" && !OPEN.report_md && !OPEN.report_error;
+  refresh.t = setTimeout(refresh, (c.new || writing ? 8 : 30) * 1000);
 }
 
 function render() {
@@ -173,7 +196,16 @@ async function openRec(id) {
       ${r.is_csp_call === 0 ? '<span class="badge b-warn">Not a CSP work call</span>' : ""}</div>
     ${r.status === "new" ? `<div class="note">${r.attempts ? `Last try failed: ${esc(r.error || "")}. Trying again soon.` : "Being transcribed and summarised. This page updates by itself."}</div>` : ""}
     ${r.status === "failed" ? `<div class="note bad">Couldn't process this recording: ${esc(r.error || "unknown error")}</div>` : ""}
-    ${r.summary ? `<h3>Summary</h3><p>${esc(r.summary)}</p>` : ""}
+    ${r.transcript?.length ? `<div class="downloads">
+      <a href="api/recordings/${r.id}/download/report.doc" download>⬇ Word document (summary + transcript)</a>
+      <a href="api/recordings/${r.id}/download/transcript.txt" download>⬇ Transcript (.txt)</a>
+      ${r.report_md ? `<a href="api/recordings/${r.id}/download/summary.md" download>⬇ Summary (.md)</a>` : ""}</div>` : ""}
+    ${r.report_md ? `<h3>Detailed summary</h3>
+      <p class="report-meta">Written from the whole transcript${r.report_s != null ? ` in ${secs(r.report_s)}` : ""}${r.report_model ? ` · ${esc(r.report_model)}` : ""}. Times in [brackets] point to the transcript below.</p>
+      <div class="report">${mdHtml(r.report_md)}</div>`
+      : r.report_error ? `<div class="note bad">The summary couldn't be written: ${esc(r.report_error)}</div>`
+      : r.status === "done" && r.transcript?.length ? `<div class="note">Writing the detailed summary… This page updates by itself.</div>`
+      : r.summary ? `<h3>Summary</h3><p>${esc(r.summary)}</p>` : ""}
     ${r.rm_handling ? `<h3>How the RM handled it</h3><p>${esc(r.rm_handling)}</p>` : ""}
     <dl class="kv">
       ${slots.map(([k, v]) => `<dt>${esc(CONFIG.slot_labels[k] || k)}</dt><dd>${esc(v)}</dd>`).join("")}
@@ -182,14 +214,18 @@ async function openRec(id) {
       ${r.other_number ? `<dt>Other number</dt><dd>${esc(r.other_number)}</dd>` : ""}
       <dt>Added</dt><dd>${fmtTime(r.uploaded_at)} · ${r.source === "phone" ? "by the phone app" : "by hand"}${r.orig_name ? ` · <span class="muted">${esc(r.orig_name)}</span>` : ""}</dd>
       ${r.processed_at ? `<dt>Processed</dt><dd>${fmtTime(r.processed_at)}${r.model ? ` · <span class="muted">${esc(r.model)}</span>` : ""}</dd>` : ""}
+      ${r.timing ? `<dt>Time taken</dt><dd>${timingHtml(r.timing)}</dd>` : ""}
+      ${r.timing?.stt ? `<dt>Transcribed by</dt><dd>${esc(r.timing.stt)}</dd>` : ""}
     </dl>
     ${lines.length ? `<h3 style="margin-top:18px">Transcript</h3>
       <p class="small muted" style="margin-top:-4px">Click a time to play from there. Personal numbers (Aadhaar, phone, OTP…) are hidden.${r.issue_segment >= 0 ? " The orange line is where the CSP explains the problem." : ""}</p>
-      <div class="lines" id="lines">${lines.map((l, i) => `<div class="line ${esc(l.speaker || "unknown")} ${i === r.issue_segment ? "issue" : ""}" data-s="${l.start}" data-e="${l.end}">
+      ${lines.some(l => l.voice) ? `<p class="small muted" style="margin-top:-4px">Speakers are told apart by their voices: ${[...new Set(lines.map(l => l.voice).filter(Boolean))].length} found.</p>` : ""}
+      <div class="lines" id="lines">${lines.map((l, i) => `<div class="line ${esc(l.speaker || "unknown")} ${i === r.issue_segment ? "issue" : ""}" data-v="${voiceNo(l) || ""}" data-s="${l.start}" data-e="${l.end}">
         <button class="t" onclick="seek(${l.start})" aria-label="Play from ${clock(l.start)}">${clock(l.start)}</button>
-        <span class="who">${SPEAKER[l.speaker] || "?"}</span><span>${esc(l.text)}</span></div>`).join("")}</div>`
+        <span class="who">${whoLabel(l, r)}</span><span>${esc(l.text)}</span></div>`).join("")}</div>`
       : r.status === "done" ? `<p class="muted">No speech was found in this recording.</p>` : ""}
     ${STAFF ? `<div class="acts"><button class="secondary" onclick="reprocess(${r.id})">Process again</button>
+      ${r.transcript?.length ? `<button class="secondary" onclick="resummarize(${r.id})">Write summary again</button>` : ""}
       ${ME.role === "admin" ? `<button class="danger" onclick="removeRec(${r.id})">Delete recording</button>` : ""}</div>` : ""}`;
   $("drawer").classList.add("open"); $("drawerBg").classList.add("open");
   const p = $("player");
@@ -197,10 +233,38 @@ async function openRec(id) {
     el.classList.toggle("playing", p.currentTime >= +el.dataset.s && p.currentTime < +el.dataset.e));
 }
 
+const secs = s => s == null ? "–" : s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${s.toFixed(1)}s`;
+// The summary's small Markdown subset (headings, bullets, bold), escaped first so nothing in it can run
+function mdHtml(md) {
+  let out = "", list = false;
+  for (const raw of md.split("\n")) {
+    let l = esc(raw.trim()).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+    if (/^[-*] /.test(l)) { if (!list) { out += "<ul>"; list = true; } out += `<li>${l.slice(2)}</li>`; continue; }
+    if (list) { out += "</ul>"; list = false; }
+    const h = l.match(/^(#{1,4})\s*(.*)$/);
+    if (h) out += `<h${Math.max(2, Math.min(h[1].length, 4))}>${h[2]}</h${Math.max(2, Math.min(h[1].length, 4))}>`;
+    else if (l) out += `<p>${l}</p>`;
+  }
+  return out + (list ? "</ul>" : "");
+}
+
+function timingHtml(t) {
+  const step = (label, s, reused) => s == null ? "" : `<div>${label}: <b>${secs(s)}</b>${reused ? ' <span class="muted small">(from an earlier run)</span>' : ""}</div>`;
+  const fresh = t.total_s;
+  return `<div><b>${secs(fresh)}</b> this run</div>`
+    + step(t.stt && t.stt.startsWith("Sarvam") ? "Transcription and speakers (Sarvam)" : "Transcription (Whisper)", t.transcribe_s, t.transcribe_reused)
+    + step("Telling speakers apart", t.voices_s, t.voices_reused)
+    + step("Summary and review", t.review_s, false);
+}
+
 function seek(t) { const p = $("player"); p.currentTime = t; p.play().catch(() => {}); }
 function closeDrawer() {
   $("drawer").classList.remove("open"); $("drawerBg").classList.remove("open");
   $("player")?.pause(); OPEN = null; history.replaceState(null, "", location.pathname);
+}
+async function resummarize(id) {
+  await api(`api/recordings/${id}/summarize`, { method: "POST" }); toast("Writing the summary again"); openRec(id);
+  setTimeout(() => OPEN?.id === id && openRec(id), 15000);
 }
 async function reprocess(id) { await api(`api/recordings/${id}/reprocess`, { method: "POST" }); toast("Processing again"); await refresh(); openRec(id); }
 async function removeRec(id) {

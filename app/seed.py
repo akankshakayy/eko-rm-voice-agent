@@ -1,4 +1,10 @@
-"""Demo RMs and CSPs. Replace with a sync from Eko's CSP master data."""
+"""Made-up RMs and CSPs for tests, the scorecard and the call simulator (they live in data/demo.db).
+
+The real RMs and CSPs come from Eko's sheets via `python -m app.kb_import`. The two never share a database:
+demo data is only added where there is no real data, and the simulator refuses to run next to real CSPs.
+"""
+import os
+
 from . import db
 
 RMS = [
@@ -27,13 +33,24 @@ CSPS = [
 ]
 
 
+def has_real_data() -> bool:
+    return bool(db.q("SELECT 1 FROM csps WHERE source='kb' UNION SELECT 1 FROM rms WHERE source='kb' LIMIT 1", one=True))
+
+
 def seed():
+    """Add the demo RMs and CSPs to an empty database (tests, scorecard, simulator)."""
     if db.q("SELECT COUNT(*) n FROM rms", one=True)["n"]:
         return
     for r in RMS:
-        db.x("INSERT INTO rms(id,name,phone,region) VALUES(?,?,?,?)", r)
+        db.x("INSERT INTO rms(id,name,phone,region,source) VALUES(?,?,?,?,'demo')", r)
     for c in CSPS:
-        db.x("INSERT INTO csps(csp_code,name,shop_name,phone,district,rm_id) VALUES(?,?,?,?,?,?)", c)
+        db.x("INSERT INTO csps(csp_code,name,shop_name,phone,district,rm_id,source) VALUES(?,?,?,?,?,?,'demo')", c)
+
+
+def seed_if_demo():
+    """At server start: only a demo server (DEMO_DATA=1) gets made-up RMs and CSPs."""
+    if os.environ.get("DEMO_DATA", "0") == "1" and not has_real_data():
+        seed()
 
 
 def csp_by_phone(phone: str):

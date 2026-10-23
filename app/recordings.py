@@ -33,7 +33,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import db, integrations, llm_engine, stt
+from . import db, diarize, integrations, llm_engine, report, sarvam, stt
 from .taxonomy import CATEGORIES, SLOT_LABELS
 
 log = logging.getLogger("eko.recordings")
@@ -48,6 +48,9 @@ TZ = ZoneInfo(os.environ.get("RECORDINGS_TZ", "Asia/Kolkata"))
 LANG = os.environ.get("RECORDINGS_LANG", "hi")
 # Recorded calls aren't live, so they get Whisper's most accurate model (the live agent uses the faster turbo one)
 STT_MODEL = os.environ.get("RECORDINGS_STT_MODEL", "whisper-large-v3")
+# No hint sentence for recordings: Whisper copied the live agent's hint ("मेरा DMT transfer fail हो गया") into a
+# 31-minute meeting that never mentioned a DMT. A vocabulary hint can be set here if a term is often misheard.
+STT_PROMPT = os.environ.get("RECORDINGS_STT_PROMPT", "") or None
 AUDIO_EXTS = {"m4a", "mp3", "aac", "amr", "3gp", "ogg", "opus", "wav", "flac", "mp4", "webm"}
 DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 SPEAKERS = ["rm", "csp", "other", "unknown"]
@@ -123,7 +126,7 @@ def save_upload(device: dict, data: bytes, filename: str, started_at_ms: int | N
         return {"id": old["id"], "duplicate": True}
     started = started_at_ms / 1000 if started_at_ms else None
     day = datetime.fromtimestamp(started or time.time(), TZ).strftime("%Y-%m-%d")
-    rel = os.path.join(f"rm{device['rm_id']}", day, f"{sha[:16]}.{ext}")
+    rel = os.path.join(f"rm{device['rm_id']}" if device.get("rm_id") else "no-rm", day, f"{sha[:16]}.{ext}")
     path = os.path.join(storage_dir(), rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
@@ -214,6 +217,10 @@ REVIEW_TOOL = {
         "properties": {
             "speakers": {"type": "array", "items": {"type": "string", "enum": SPEAKERS},
                          "description": "One entry per numbered line, in order: who said it."},
+            "voice_roles": {"type": "object",
+                            "properties": {v: {"type": "string", "enum": SPEAKERS} for v in "ABCD"},
+                            "description": "When lines carry voice labels: who each voice is, e.g. {\"A\": \"rm\", "
+                                           "\"B\": \"csp\"}."},
             "is_csp_call": {"type": "boolean",
                             "description": "False if this is not an RM-CSP work conversation (wrong number, "
                                            "voicemail, personal call, no real conversation)."},
@@ -249,7 +256,11 @@ numbers are already masked, e.g. [PHONE], [AADHAAR].
 For every numbered line decide who said it: "rm" (the Eko RM: greets the CSP by name, asks for details,
 checks, explains, promises a follow-up), "csp" (the retailer: reports problems, asks about money, commission,
 their ID), "other" (anyone else, e.g. a customer at the shop) or "unknown". Speakers usually alternate, but one
-person often speaks several lines in a row. Then classify the call into one issue type:
+person often speaks several lines in a row.
+When lines carry a voice label, e.g. "(voice A)", the voices were separated from the sound itself, so every line
+with the same voice is the same person. Then fill voice_roles (which person each voice is), judging from
+everything that voice says, and give each line its voice's role in speakers.
+Then classify the call into one issue type:
 {cats}
 - unknown: none of these, or no issue
 Use the call_review tool. Write summary and rm_handling in English."""
@@ -258,7 +269,8 @@ Use the call_review tool. Write summary and rm_handling in English."""
 def _review_input(segs: list[dict]) -> str:
     lines, size = [], 0
     for i, s in enumerate(segs):
-        line = f"[{i}] {int(s['start'] // 60):02d}:{int(s['start'] % 60):02d} {s['text']}"
+        voice = f" (voice {s['voice']})" if s.get("voice") else ""
+        line = f"[{i}] {int(s['start'] // 60):02d}:{int(s['start'] % 60):02d}{voice} {s['text']}"
         if size + len(line) > MAX_PROMPT_CHARS:
             lines.append(f"(transcript cut here: lines {i}-{len(segs) - 1} not shown, mark them unknown)")
             break
@@ -312,7 +324,10 @@ def _ask(system: str, user: str, tool: dict) -> tuple[dict, str]:
 def review_call(segs: list[dict]) -> tuple[dict, str]:
     out, model = _ask(_review_prompt(), _review_input(segs), REVIEW_TOOL)
     speakers = [s if s in SPEAKERS else "unknown" for s in (out.get("speakers") or [])]
-    out["speakers"] = (speakers + ["unknown"] * len(segs))[:len(segs)]
+    speakers = (speakers + ["unknown"] * len(segs))[:len(segs)]
+    roles = {v: r for v, r in (out.get("voice_roles") or {}).items() if r in SPEAKERS}
+    # Voices come from the sound, so one voice is one person: its role decides every line it speaks
+    out["speakers"] = [roles.get(s.get("voice"), sp) for s, sp in zip(segs, speakers)]
     out["slots"] = {k: llm_engine.normalize_id(v) if k in llm_engine.ID_SLOTS else str(v).strip()
                     for k, v in (out.get("slots") or {}).items() if k in SLOT_LABELS and str(v or "").strip()}
     try:
@@ -356,7 +371,7 @@ def split_sentences(segs: list[dict]) -> list[dict]:
         total, t = sum(len(p) for p in parts), s["start"]
         for p in parts:
             end = round(t + (s["end"] - s["start"]) * len(p) / total, 2)
-            out.append({"start": round(t, 2), "end": end, "text": p})
+            out.append({**s, "start": round(t, 2), "end": end, "text": p})
             t = end
     return out
 
@@ -365,24 +380,93 @@ def _is_rate_limit(e: Exception) -> bool:
     return type(e).__name__ == "RateLimitError" or getattr(e, "status_code", None) == 429
 
 
-def process_one(r: dict):
-    audio, name = _compact(os.path.join(storage_dir(), r["file_path"]))
+def _lines(r: dict, path: str, cache: dict) -> list[dict]:
+    """Transcript lines, one speaker each: Sarvam's own speaker split; else Whisper's words matched to the local
+    voice model; else Whisper's sentences."""
+    if "lines" in cache:
+        return split_sentences(cache["lines"])
+    segs, words = cache["segments"], cache["words"]
+    if words and diarize.available():
+        try:
+            if cache.get("voice_settings") != diarize.settings():
+                t0 = time.perf_counter()
+                cache.update(turns=diarize.diarize(path), voice_settings=diarize.settings(),
+                             voices_s=round(time.perf_counter() - t0, 1), voices_at=time.time())
+                db.update("recordings", r["id"], stt_json=cache)
+            if cache["turns"]:
+                return split_sentences(diarize.assign_words(diarize.punctuate(words, segs), cache["turns"]))
+        except Exception:
+            log.exception("Voice separation failed for %s; splitting by sentence instead", path)
+    return split_sentences(segs)
+
+
+PROMPT_UNSET = object()     # results saved before the prompt was recorded are redone
+
+
+def _transcribe(r: dict, path: str) -> dict:
+    """The speech-to-text result, reused from an earlier run with the same settings when there is one.
+    With SARVAM_API_KEY: Sarvam's transcript already split by speaker. Otherwise Whisper's segments and words."""
+    cache = json.loads(r.get("stt_json") or "null") or {}
+    if sarvam.available():
+        if cache.get("provider") == sarvam.settings() and "lines" in cache:
+            return cache
+        t0 = time.perf_counter()
+        try:
+            lines = sarvam.transcribe(path)
+        except sarvam.SarvamError as e:
+            if e.status_code == 429:
+                raise RateLimited("Sarvam rate limit", 120) from e
+            raise
+        cache = {"provider": sarvam.settings(), "stt": f"Sarvam {sarvam.MODEL} ({sarvam.MODE}), speakers by Sarvam",
+                 "lines": lines, "transcribe_s": round(time.perf_counter() - t0, 1), "transcribe_at": time.time()}
+        db.update("recordings", r["id"], stt_json=cache)
+        return cache
+    want_words = diarize.available()
+    if cache.get("model") == STT_MODEL and cache.get("prompt", PROMPT_UNSET) == STT_PROMPT and (cache.get("words") or not want_words):
+        return cache
+    t0 = time.perf_counter()
+    audio, name = _compact(path)
     try:
-        segs = stt.transcribe_segments(audio, name, LANG, STT_MODEL)
+        segs, words = stt.transcribe_detailed(audio, name, LANG, STT_MODEL, words=want_words, prompt=STT_PROMPT)
     except Exception as e:
         if _is_rate_limit(e):
             raise RateLimited("Whisper rate limit", 300) from e
         raise
-    segs = [{**s, "text": mask(s["text"])} for s in split_sentences(segs)]
+    cache = {"model": STT_MODEL, "prompt": STT_PROMPT, "segments": segs, "words": words,
+             "stt": f"Whisper {STT_MODEL}" + (", speakers by the local voice model" if want_words else ""),
+             "transcribe_s": round(time.perf_counter() - t0, 1), "transcribe_at": time.time()}
+    db.update("recordings", r["id"], stt_json=cache)
+    return cache
+
+
+def process_one(r: dict):
+    started, t0 = time.time(), time.perf_counter()
+    path = os.path.join(storage_dir(), r["file_path"])
+    cache = _transcribe(r, path)
+    fresh_stt = cache.get("transcribe_at", 0) >= started
+    t1 = time.perf_counter()
+    segs = [{**s, "text": mask(s["text"])} for s in _lines(r, path, cache)]
+    fresh_voices = cache.get("voices_at", 0) >= started
+    t2 = time.perf_counter()
+
+    def timing(review_s: float = 0.0) -> dict:
+        """How long each step took. A step reused from an earlier run shows its original time, marked reused."""
+        return {"transcribe_s": cache.get("transcribe_s") if not fresh_stt else round(t1 - t0, 1),
+                "transcribe_reused": not fresh_stt, "voices_s": cache.get("voices_s"), "voices_reused": not fresh_voices,
+                "lines_s": round(t2 - t1, 1), "review_s": round(review_s, 1), "total_s": round(time.perf_counter() - t0, 1),
+                "stt": cache.get("stt")}
+
     fields = {"status": "done", "processed_at": time.time(), "attempts": r["attempts"] + 1, "error": None}
     if not segs:
-        db.update("recordings", r["id"], **fields, is_csp_call=0, transcript_json=[],
+        db.update("recordings", r["id"], **fields, is_csp_call=0, transcript_json=[], timing_json=timing(),
                   summary="No speech in the recording")
         integrations.recording_processed(r["id"])
         return
+    t3 = time.perf_counter()
     review, model = review_call(segs) if llm_engine.provider() else ({}, None)
+    review_s = time.perf_counter() - t3
     speakers = review.get("speakers") or ["unknown"] * len(segs)
-    db.update("recordings", r["id"], **fields,
+    db.update("recordings", r["id"], **fields, timing_json=timing(review_s),
               transcript_json=[{**s, "speaker": sp} for s, sp in zip(segs, speakers)],
               is_csp_call=None if not review else int(bool(review.get("is_csp_call"))),
               language=review.get("language"), issue_segment=review.get("issue_segment"),
@@ -390,7 +474,18 @@ def process_one(r: dict):
               slots_json=review.get("slots") or {}, sentiment=review.get("sentiment"),
               resolution=review.get("resolution"), rm_handling=review.get("rm_handling"),
               summary=review.get("summary"), model=model)
+    _write_summary(r["id"])
     integrations.recording_processed(r["id"])
+
+
+def _write_summary(rec_id: int):
+    """The full summary (app/report.py). A failure here never fails the recording: the page offers a retry."""
+    if not llm_engine.provider():
+        return
+    try:
+        report.make_summary(rec_id)
+    except Exception:
+        log.exception("Summary failed for recording %d", rec_id)
 
 
 _busy = threading.Lock()
@@ -509,9 +604,11 @@ def list_recordings(status: str | None = None, rm_id: int | None = None, limit: 
 
 def get_recording(rec_id: int) -> dict | None:
     r = db.q(f"""SELECT {LIST_COLS}, r.transcript_json, r.slots_json, r.issue_segment, r.intent_confidence, r.rm_handling,
-                 r.model, r.processed_at, r.next_try_at FROM recordings r LEFT JOIN rms m ON m.id=r.rm_id
+                 r.model, r.processed_at, r.next_try_at, r.timing_json, r.report_md, r.report_error, r.report_at,
+                 r.report_s, r.report_model FROM recordings r LEFT JOIN rms m ON m.id=r.rm_id
                  LEFT JOIN csps c ON c.id=r.csp_id WHERE r.id=?""", (rec_id,), one=True)
     if r:
+        r["timing"] = json.loads(r.pop("timing_json") or "null")
         r["transcript"] = json.loads(r.pop("transcript_json") or "[]")
         r["slots"] = json.loads(r.pop("slots_json") or "{}")
     return r
@@ -595,8 +692,8 @@ def _cli():
     sub.add_parser("export", help="draft scorecard cases -> evals/candidates.csv")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    from .seed import seed
-    seed()                                   # a fresh database gets its RMs, as when the server starts
+    from .seed import seed_if_demo
+    seed_if_demo()                           # as when the server starts
     if a.cmd == "token":
         tok = create_token(a.rm, a.label, "cli")
         print(f"Upload token for {tok['rm_name']} ({tok['label'] or 'no label'}). Shown only once:\n\n  {tok['token']}\n")

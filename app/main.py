@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -17,8 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from . import agent, auth, db, integrations, metrics, recordings, stt, tts  # noqa: E402
-from .seed import seed  # noqa: E402
+from . import agent, auth, db, integrations, mailer, metrics, recordings, report, stt, tts  # noqa: E402
+from .seed import seed_if_demo  # noqa: E402
 from .taxonomy import CATEGORIES, SLOT_LABELS, STT_CONFIDENCE_MIN, INTENT_CONFIDENCE_MIN, MAX_MISUNDERSTOOD  # noqa
 
 STATIC = os.path.join(os.path.dirname(__file__), "..", "static")
@@ -51,16 +52,30 @@ async def lifespan(_app):
 
 app = FastAPI(title="Eko RM Voice Agent", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
-seed()
+seed_if_demo()
 
 # ------------------------------------------------------------------ auth
-PUBLIC_PATHS = {"/login", "/signup", "/api/auth/login", "/api/auth/signup", "/api/auth/rms", "/favicon.ico"}
+PUBLIC_PATHS = {"/login", "/signup", "/forgot", "/reset", "/verify-email", "/favicon.ico", "/api/auth/login",
+                "/api/auth/signup", "/api/auth/forgot", "/api/auth/reset", "/api/auth/verify", "/api/auth/options"}
 PUBLIC_PREFIXES = ("/static/",)
 DEVICE_PATHS = {"/api/uploader/ping", "/api/uploader/recordings"}   # the uploader app: upload token, not a login
 STAFF = ("admin", "ops")                       # full access to calls, dashboards and metrics
 PAGE_ROLES = {"/": ("admin", "ops", "rm"), "/call": STAFF, "/ops": STAFF, "/rm": ("admin", "ops", "rm"),
-              "/users": ("admin",), "/recordings": ("admin", "ops", "rm")}
-PENDING_OK = {"/pending", "/api/auth/me", "/api/auth/logout"}   # all a not-yet-approved account can reach
+              "/users": ("admin",), "/recordings": ("admin", "ops", "rm"), "/account": ("admin", "ops", "rm", "pending")}
+# All a not-yet-approved account can reach: its own account settings
+PENDING_OK = {"/pending", "/account", "/api/auth/me", "/api/auth/logout", "/api/auth/logout-all", "/api/auth/password",
+              "/api/auth/email", "/api/auth/verify/resend", "/api/auth/activity"}
+TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"   # behind nginx: take the client address from X-Forwarded-For
+
+
+def client_ip(request: Request) -> str | None:
+    if TRUST_PROXY:
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if fwd:
+            return fwd[:64]
+    return request.client.host if request.client else None
+
+
 
 
 # Redirects and page links are relative ("login", "static/..."), so Sahayak works at the top of an address
@@ -99,6 +114,22 @@ async def require_login(request: Request, call_next):
     return await call_next(request)
 
 
+# Added after require_login, so it runs first and also covers its redirects and 401s
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    # Reset and verification links carry a token in the address; never pass it on to another site
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Permissions-Policy", "camera=(), geolocation=()")
+    if request.url.path.startswith("/api/"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+    if auth.COOKIE_SECURE:
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return resp
+
+
 def allow(*roles):
     """Route dependency: only these roles may call the endpoint."""
     def check(request: Request):
@@ -132,27 +163,115 @@ class LoginBody(BaseModel):
     password: str
 
 
-def _signed_in(user: dict) -> JSONResponse:
+class EmailBody(BaseModel):
+    email: str
+
+
+class ResetBody(BaseModel):
+    token: str
+    password: str
+
+
+class TokenBody(BaseModel):
+    token: str
+
+
+class PasswordBody(BaseModel):
+    current: str
+    new: str
+
+
+class EmailChangeBody(BaseModel):
+    email: str
+    password: str
+
+
+def _signed_in(user: dict, request: Request) -> JSONResponse:
     resp = JSONResponse(auth.public_user(user))
-    resp.set_cookie(auth.COOKIE, auth.create_session(user["id"]), max_age=auth.SESSION_DAYS * 86400,
+    token = auth.create_session(user["id"], client_ip(request), request.headers.get("user-agent"))
+    resp.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400,
                     httponly=True, samesite="lax", secure=auth.COOKIE_SECURE, path="/")
     return resp
 
 
-@app.post("/api/auth/signup")
-def signup(body: SignupBody):
+def _auth_call(fn, *args, **kw):
     try:
-        return _signed_in(auth.signup(body.email, body.password, body.name, body.rm_id))
+        return fn(*args, **kw)
     except auth.AuthError as e:
         raise HTTPException(e.status, str(e))
+
+
+@app.post("/api/auth/signup")
+def signup(body: SignupBody, request: Request):
+    return _signed_in(_auth_call(auth.signup, body.email, body.password, body.name, body.rm_id, client_ip(request)),
+                      request)
 
 
 @app.post("/api/auth/login")
-def login(body: LoginBody):
-    try:
-        return _signed_in(auth.login(body.email, body.password))
-    except auth.AuthError as e:
-        raise HTTPException(e.status, str(e))
+def login(body: LoginBody, request: Request):
+    return _signed_in(_auth_call(auth.login, body.email, body.password, client_ip(request)), request)
+
+
+@app.get("/api/auth/options")
+def auth_options():
+    """What the sign-in pages can offer: email links only work once SMTP is set up."""
+    return {"email": mailer.configured(), "min_password": auth.MIN_PASSWORD, "domains": auth.allowed_domains()}
+
+
+@app.post("/api/auth/forgot")
+def forgot(body: EmailBody, request: Request):
+    auth.request_password_reset(body.email, client_ip(request))
+    # The same reply whether or not the account exists, so this can't be used to find out who has one
+    return {"ok": True}
+
+
+@app.post("/api/auth/reset")
+def reset(body: ResetBody, request: Request):
+    _auth_call(auth.reset_password, body.token, body.password, client_ip(request))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/verify")
+def verify(body: TokenBody, request: Request):
+    return auth.public_user(_auth_call(auth.verify_email, body.token, client_ip(request)))
+
+
+@app.post("/api/auth/verify/resend")
+def resend_verification(request: Request):
+    u = request.state.user
+    if u.get("email_verified_at"):
+        return {"sent": False, "verified": True}
+    return {"sent": auth.send_verification(u)}
+
+
+@app.post("/api/auth/password")
+def change_password(body: PasswordBody, request: Request):
+    _auth_call(auth.change_password, request.state.user, body.current, body.new, request.cookies.get(auth.COOKIE),
+               client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/auth/email")
+def change_email(body: EmailChangeBody, request: Request):
+    return {"sent": _auth_call(auth.start_email_change, request.state.user, body.email, body.password,
+                               client_ip(request))}
+
+
+@app.post("/api/auth/logout-all")
+def logout_all(request: Request):
+    auth.end_all_sessions(request.state.user, client_ip(request))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/activity")
+def my_activity(request: Request):
+    u = request.state.user
+    return {"events": auth.activity(u["id"]), "sessions": auth.session_count(u["id"]),
+            "password_changed_at": u.get("password_changed_at")}
 
 
 @app.post("/api/auth/logout")
@@ -168,13 +287,6 @@ def me(request: Request):
     return auth.public_user(request.state.user)
 
 
-@app.get("/api/auth/rms")
-def signup_rms():
-    """RM profiles a new user can link to (ones that don't have an account yet)."""
-    return db.q("SELECT id, name, region FROM rms WHERE id NOT IN (SELECT rm_id FROM users WHERE rm_id IS NOT NULL)"
-                " ORDER BY id")
-
-
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return FileResponse(os.path.join(STATIC, "favicon.ico"), media_type="image/x-icon")
@@ -186,8 +298,16 @@ def login_page():
 
 
 @app.get("/signup")
+@app.get("/forgot")
+@app.get("/reset")
+@app.get("/verify-email")
 def signup_page():
     return FileResponse(os.path.join(STATIC, "login.html"))
+
+
+@app.get("/account")
+def account_page():
+    return FileResponse(os.path.join(STATIC, "account.html"))
 
 
 @app.get("/pending")
@@ -217,6 +337,13 @@ def change_role(user_id: int, body: RoleBody, actor=Depends(allow("admin"))):
         return auth.public_user(auth.set_role(actor, user_id, body.role, body.rm_id))
     except auth.AuthError as e:
         raise HTTPException(e.status, str(e))
+
+
+@app.post("/api/users/{user_id}/reset-link")
+def user_reset_link(user_id: int, actor=Depends(allow("admin"))):
+    """One-time password reset link for a user, for when email isn't set up. Shown to the admin only once."""
+    return {"path": f"reset?token={_auth_call(auth.admin_reset_link, actor, user_id)}",
+            "minutes": auth.RESET_MINUTES}
 
 
 @app.delete("/api/users/{user_id}")
@@ -506,12 +633,13 @@ def recording_audio(rec_id: int, request: Request):
 
 
 @app.post("/api/recordings/upload")
-def upload_recordings(audio: list[UploadFile] = File(...), rm_id: int = Form(...), started_at: str = Form(""),
+def upload_recordings(audio: list[UploadFile] = File(...), rm_id: int | None = Form(None), started_at: str = Form(""),
                       direction: str = Form("unknown"), other_number: str = Form(""), actor=Depends(allow(*STAFF))):
     """Add recordings by hand (e.g. calls shared on WhatsApp). They go through the same processing as phone uploads.
     started_at: one epoch-ms value per file, comma-separated (the page sends each file's own date)."""
-    if not db.q("SELECT id FROM rms WHERE id=?", (rm_id,), one=True):
-        raise HTTPException(400, "Choose the RM who made these calls")
+    rm_id = rm_id or None                     # 0 / empty = not an RM call (e.g. a meeting or an interview)
+    if rm_id and not db.q("SELECT id FROM rms WHERE id=?", (rm_id,), one=True):
+        raise HTTPException(400, "No such RM")
     times = [t.strip() for t in started_at.split(",")]
     results = []
     for i, f in enumerate(audio):
@@ -528,6 +656,36 @@ def upload_recordings(audio: list[UploadFile] = File(...), rm_id: int = Form(...
         except ValueError as e:
             results.append({"file": name, "error": str(e)})
     return {"results": results}
+
+
+DOWNLOADS = {"transcript.txt": ("transcript_file", "txt", "text/plain; charset=utf-8"),
+             "summary.md": ("summary_file", "md", "text/markdown; charset=utf-8"),
+             "report.doc": ("word_file", "doc", "application/msword")}
+
+
+@app.get("/api/recordings/{rec_id}/download/{kind}", dependencies=[Depends(allow("admin", "ops", "rm"))])
+def download_recording(rec_id: int, kind: str, request: Request):
+    """The transcript (.txt), the summary (.md) or both as a Word document (.doc), as a file to save."""
+    if kind not in DOWNLOADS:
+        raise HTTPException(404, "Choose transcript.txt, summary.md or report.doc")
+    r = _own_recording(request, rec_id)
+    fn, ext, media = DOWNLOADS[kind]
+    name = report.filename(r, ext)
+    return Response(getattr(report, fn)(r), media_type=media,
+                    headers={"Content-Disposition": f"attachment; filename=\"{name}\"; filename*=UTF-8''{quote(name)}"})
+
+
+@app.post("/api/recordings/{rec_id}/summarize", dependencies=[Depends(allow(*STAFF))])
+def summarize_recording(rec_id: int):
+    """Write the full summary again (it is written by itself after each recording is processed)."""
+    r = recordings.get_recording(rec_id)
+    if not r:
+        raise HTTPException(404, "Recording not found")
+    if not r["transcript"]:
+        raise HTTPException(400, "This recording has no transcript yet")
+    db.update("recordings", rec_id, report_error=None, report_at=None)
+    threading.Thread(target=recordings._write_summary, args=(rec_id,), daemon=True, name="summary").start()
+    return {"started": True}
 
 
 @app.post("/api/recordings/{rec_id}/reprocess", dependencies=[Depends(allow(*STAFF))])
@@ -626,7 +784,10 @@ class Simulate(BaseModel):
 
 @app.post("/api/simulate", dependencies=[Depends(allow(*STAFF))])
 def simulate(body: Simulate):
+    from .seed import has_real_data
     from .simulator import run_live, run_backfill
+    if has_real_data():
+        raise HTTPException(409, "The simulator only runs on the demo database, never next to real CSPs")
     n = max(1, min(body.calls, 50))
     if body.live:
         threading.Thread(target=run_live, args=(n, body.engine), daemon=True).start()

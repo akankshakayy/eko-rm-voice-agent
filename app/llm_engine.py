@@ -64,6 +64,11 @@ def _language_rules(lang: str | None) -> str:
             "Never write Hindi in Roman script. If the caller asks to switch to English, reply in English.")
 
 
+def _first_name(name: str | None) -> str:
+    # Real CSP/RM records stay on our server: the LLM provider only ever sees a first name and the CSP code.
+    return (name or "").split()[0] if (name or "").strip() else ""
+
+
 def _system_prompt(state: dict) -> str:
     cats = "\n".join(
         f"- {k}: {v['label']} | required details: {', '.join(v['slots']) or 'none'} | priority {v['priority']}"
@@ -107,8 +112,8 @@ If the last message was unclear or garbled, set understood=false and politely as
 
 CALL CONTEXT
 - Direction: {state.get('direction')} | Purpose: {state.get('purpose')}
-- CSP: {csp.get('name', 'UNKNOWN - ask for CSP ID')} ({csp.get('csp_code', '-')}), shop {csp.get('shop_name', '-')}, {csp.get('district', '-')}
-- RM: {state.get('rm_name', '-')}
+- CSP: {_first_name(csp.get('name')) or 'UNKNOWN - ask for CSP ID'} ({csp.get('csp_code', '-')})
+- RM: {_first_name(state.get('rm_name')) or '-'}
 - CSP's recent tickets:
 {tlist}
 - Current understanding: intent={state.get('intent')} confidence={state.get('intent_confidence')} details={json.dumps(slots, ensure_ascii=False)}

@@ -80,14 +80,15 @@ function row(u) {
   const self = ME && u.id === ME.id;
   return `<div class="urow ${u.role === "pending" ? "pending" : ""}" data-id="${u.id}">
     <div class="who"><span class="avatar" aria-hidden="true">${esc(initials(u.name))}</span><div><b>${esc(u.name)}${self ? ' <span class="badge b-accent">you</span>' : ""}</b>
-      <span class="small muted">${esc(u.email)} · joined ${fmtTime(u.created_at)}${u.last_login_at ? " · last login " + ago(u.last_login_at) : ""}</span>
-      ${u.role === "pending" && u.rm_name ? `<div class="small">Says they are RM <b>${esc(u.rm_name)}</b></div>` : ""}</div></div>
+      <span class="small muted">${esc(u.email)} ${u.email_verified ? '<span class="badge b-ok">confirmed</span>' : '<span class="badge">not confirmed</span>'} · joined ${fmtTime(u.created_at)}${u.last_login_at ? " · last login " + ago(u.last_login_at) : ""}</span>
+      ${u.role === "pending" && u.rm_name ? `<div class="small">${u.email_verified ? "Confirmed email matches" : "Says they are"} RM <b>${esc(u.rm_name)}</b></div>` : ""}</div></div>
     <select class="role" aria-label="Role">${ROLE_OPTS.map(([v, t]) => `<option value="${v}" ${u.role === v ? "selected" : ""}>${t}</option>`).join("")}</select>
     <select class="rm" aria-label="RM profile"><option value="">No RM profile</option>
       ${RMS.map(r => `<option value="${r.id}" ${u.rm_id === r.id ? "selected" : ""}>${esc(r.name)} · ${esc(r.region)}</option>`).join("")}</select>
     <div class="acts">
       ${u.role === "pending" ? `<button class="approve">Approve</button>` : ""}
       <button class="secondary save">Save</button>
+      ${self ? "" : `<button class="secondary resetlink" title="One-time link for this user to set a new password">Reset link</button>`}
       ${self ? "" : `<button class="danger remove">Remove</button>`}
     </div>
     <div class="msg"></div>
@@ -119,6 +120,16 @@ $("list").onclick = async e => {
   if (e.target.classList.contains("approve")) {
     // Approving someone who picked an RM profile makes them that RM; otherwise Ops
     save(el, el.querySelector(".rm").value ? "rm" : "ops");
+  }
+  if (e.target.classList.contains("resetlink")) {
+    const msg = el.querySelector(".msg");
+    try {
+      const r = await api(`api/users/${el.dataset.id}/reset-link`, { method: "POST" });
+      const link = new URL(r.path, location.href).href;
+      msg.className = "msg ok";
+      msg.innerHTML = `Send this to them yourself (works once, for ${r.minutes} minutes): <code style="user-select:all;word-break:break-all">${esc(link)}</code>`;
+      navigator.clipboard?.writeText(link).then(() => toast("Reset link copied"));
+    } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
   }
   if (e.target.classList.contains("remove")) {
     const name = el.querySelector(".who b").textContent;

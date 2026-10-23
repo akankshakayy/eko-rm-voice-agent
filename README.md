@@ -16,10 +16,11 @@ Everything shows up live on the dashboards.
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env                                     # add GROQ_API_KEY (free) to use a real LLM
-python -m app.simulator --backfill 150 --days 7          # optional: demo history for the charts
+python -m app.kb_import data/kb/inbox/<calling sheet>.xlsx   # the real RMs, CSPs and slabs (see below)
 uvicorn app.main:app --reload --port 8000
 ```
-Open http://localhost:8000/call and click **Start call**.
+Open http://localhost:8000/call and click **Start call**. For a demo with made-up CSPs instead, use a separate
+database: `EKO_DB_PATH=data/demo.db DEMO_DATA=1 uvicorn app.main:app --port 8001` (the simulator only runs there).
 
 **Engines.** Without an API key the agent runs on the **rules fallback engine**, which is free and works offline.
 With a key it uses an LLM:
@@ -48,9 +49,34 @@ mic works in any browser; without it the mic uses the browser's Web Speech API (
 
 The **first account ever created becomes Admin**; everyone after that signs up as Pending. Roles are enforced on
 the server for every page and API call (RMs asking for another RM's data get a 404), and the UI hides what a role
-can't use. Passwords are hashed with scrypt; logins last 7 days (HttpOnly session cookie, stored hashed in the
-`sessions` table); 5 wrong passwords lock an email for 15 minutes. Ticket changes are recorded under the signed-in
-user's name. Set `COOKIE_SECURE=1` when serving over HTTPS.
+can't use. Ticket changes are recorded under the signed-in user's name.
+
+Account security:
+- Only work emails can sign up (`ALLOWED_EMAIL_DOMAINS`, default `eko.co.in,ekosupport.in`).
+- Passwords: at least 10 characters, not a common password, not containing the user's name or email; hashed with scrypt.
+- 5 wrong passwords lock an email for 15 minutes (counted in the database, so a restart doesn't reset it).
+- Logins last 7 days but end after 12 hours unused (`SESSION_IDLE_HOURS`); cookie is HttpOnly, stored hashed.
+- **Forgot password**: emails a one-time link valid for 30 minutes (max 3 an hour); using it signs the account out
+  everywhere. Without email set up, an admin makes the link on the **Users** page and passes it on.
+- **Email linking**: new accounts get a confirmation link. When the confirmed email is the one the calling sheet
+  gives for an RM, the account is linked to that RM profile (an admin still approves it). The signup page no longer
+  shows RM names to the public.
+- **Account page** (click your name): change password (other devices are signed out), change email (only after the
+  new address confirms), sign out everywhere, recent sign-in activity. Everything is logged in `auth_events`.
+- Emails need `SMTP_HOST`, `SMTP_FROM` and `APP_BASE_URL` (links are built from it, never from the request).
+  They contain only a link, never CSP data. Set `COOKIE_SECURE=1` over HTTPS and `TRUST_PROXY=1` behind nginx.
+
+**Real CSP data (knowledge base).** Eko's sheets go in `data/kb/inbox/` (git-ignored, never committed: a
+pre-commit hook in `deploy/pre-commit` blocks spreadsheets, databases and recordings; install it with
+`cp deploy/pre-commit .git/hooks/`). `python -m app.kb_import <file>` reads the **Calling Sheet New** and **Slab**
+tabs without changing the file: RMs (with their sheet email and phone), CSPs, and per CSP per month the targets,
+month-to-date PMJDY/PMJJBY/PMSBY/APY counts, slab, transaction count and commission (`csp_monthly`). The same file
+twice changes nothing; CSPs that leave the sheet are marked inactive, not deleted; a number shared by several CSPs
+is kept but never used to recognise a caller. **Slab rule** (matches every month of the sheet): a CSP reaches the
+highest slab where at least 3 of the 4 schemes meet that slab's count (`kb_import.slab_for`). The first import into
+a database that still has the made-up data needs `--remove-demo`: it copies the database to `data/demo.db` and
+deletes the demo RMs/CSPs and every simulated call and ticket (`--map-rm 1=Shiwani` moves logins and upload tokens
+of a demo RM to a real one instead of unlinking them). The LLM only ever sees a CSP's code and first name.
 
 **Abandoned calls.** Closing or reloading the call console tab hangs up the call. Any call with no activity for
 10 minutes (`CALL_IDLE_TIMEOUT_MIN`) is closed automatically by a background check that runs every minute, exactly
@@ -93,9 +119,15 @@ RM's phone: dialer records the call → Sahayak Recorder Sync app (uploader/) up
    and adds a draft row to `evals/candidates.csv`. Listen, write `reference_text` and the expected answers, then
    move the row to `evals/cases.csv`.
 
-Aadhaar, PAN, card, account, phone and OTP/PIN numbers are masked from transcripts before they are stored or sent to
-the LLM. Transaction IDs, UTRs and amounts are kept. Masking is regex-based, so numbers spoken as Hindi words get
-through, and the original audio is kept unmasked. CSPs should know their calls are recorded: Google Dialer
+Aadhaar, PAN, card, account, phone and OTP/PIN numbers are masked from the transcripts that are shown, sent out
+by webhook or sent to the LLM. Transaction IDs, UTRs and amounts are kept. Masking is regex-based, so numbers spoken
+as Hindi words get through. The original audio, and Whisper's raw output kept so "Process again" needn't redo it,
+are not masked and never leave the server.
+
+**Speakers are told apart by voice** (speaker diarization) with two small local models from sherpa-onnx, about
+50 MB, no GPU or account needed. Fetch them once per machine with `python -m app.diarize download`. Every word Whisper
+hears goes to the voice speaking at that moment, so a transcript line never mixes two people; the page shows them as
+Speaker 1, Speaker 2, and on RM–CSP calls also says which is the RM. Without the models, lines are split by sentence. CSPs should know their calls are recorded: Google Dialer
 announces it, but other dialers don't.
 
 ## Connecting other systems
@@ -145,10 +177,12 @@ app/
   llm_engine.py    Claude engine (forced `agent_turn` tool call → structured output)
   rules_engine.py  keyword/regex fallback engine
   i18n.py          Hindi + English phrases, language choice and detection
-  auth.py          accounts, roles, password hashing, sessions
+  auth.py          accounts, roles, password hashing, sessions, reset/verification links, email linking
+  mailer.py        account emails over SMTP (off until configured)
+  kb_import.py     imports Eko's calling sheet + slab table; the slab rule
   metrics.py       dashboard aggregations
   simulator.py     synthetic CSP callers (live or backfill)
-  seed.py          demo RMs and CSPs (replace with Eko CSP master sync)
+  seed.py          made-up RMs and CSPs for tests, scorecard and simulator (data/demo.db)
   recordings.py    call recordings pilot: uploads, transcription + review as calls arrive, export to the scorecard
   integrations.py  service API keys and signed webhooks for other systems (see INTEGRATION.md)
   db.py, main.py   SQLite + FastAPI
@@ -158,6 +192,8 @@ uploader/          Android app that uploads the RMs' Eko-SIM call recordings eve
 ```
 
 ## Simulator
+
+The simulator only runs on a database without real CSPs (`EKO_DB_PATH=data/demo.db DEMO_DATA=1`).
 
 ```bash
 python -m app.simulator --backfill 150 --days 7     # history

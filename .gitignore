@@ -10,3 +10,14 @@ evals/candidates.csv
 # Eko-internal documents: share them directly, not through GitHub
 docs/*.pdf
 docs/*.xlsx
+
+# Real CSP/RM data never goes to git, wherever it is saved (see deploy/pre-commit)
+*.xlsx
+*.xls
+*.xlsm
+*.ods
+*.csv
+!evals/cases.csv
+*.db
+*.db-*
+*.sqlite*

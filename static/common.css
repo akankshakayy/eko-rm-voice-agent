@@ -104,7 +104,8 @@ header.top .userbox button { padding: 6px 12px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; flex: none;
   background: var(--grad-sun); color: #3d2200; font: 700 12.5px/1 var(--font-body); letter-spacing: .02em;
   box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px color-mix(in srgb, var(--sun) 55%, transparent); }
-.who { display: flex; align-items: center; gap: 8px; }
+.who { display: flex; align-items: center; gap: 8px; color: inherit; text-decoration: none; border-radius: var(--radius-sm); }
+a.who:hover .who-text b { color: var(--accent); }
 .who .who-text { display: grid; line-height: 1.2; }
 .who .who-text b { font-size: 13px; }
 .who .who-text span { font-size: 11.5px; color: var(--muted); }

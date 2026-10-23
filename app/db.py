@@ -10,11 +10,31 @@ _lock = threading.RLock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rms (
-    id INTEGER PRIMARY KEY, name TEXT, phone TEXT, region TEXT
+    id INTEGER PRIMARY KEY, name TEXT, phone TEXT, region TEXT,
+    email TEXT,                -- from the calling sheet; a verified login with this email is linked to the RM
+    source TEXT                -- demo (app/seed.py) | kb (imported from Eko's sheets, app/kb_import.py)
 );
 CREATE TABLE IF NOT EXISTS csps (
     id INTEGER PRIMARY KEY, csp_code TEXT UNIQUE, name TEXT, shop_name TEXT, phone TEXT UNIQUE,
-    district TEXT, rm_id INTEGER REFERENCES rms(id)
+    district TEXT, rm_id INTEGER REFERENCES rms(id),
+    shared_phone TEXT,         -- a mobile number several CSPs gave; never used to recognise a caller
+    alt_phone TEXT, email TEXT, category TEXT, state TEXT, lho TEXT, population TEXT,
+    terminal_status TEXT, active INTEGER DEFAULT 1, source TEXT, import_id INTEGER, updated_at REAL
+);
+CREATE TABLE IF NOT EXISTS kb_imports (       -- every sheet imported into the knowledge base (app/kb_import.py)
+    id INTEGER PRIMARY KEY, file_name TEXT, sha256 TEXT UNIQUE, kind TEXT, rows INTEGER,
+    notes TEXT, imported_by TEXT, imported_at REAL
+);
+CREATE TABLE IF NOT EXISTS csp_monthly (      -- one row per CSP per month: targets, month-to-date achievement, slab
+    csp_id INTEGER REFERENCES csps(id), month TEXT,   -- YYYY-MM
+    pmjdy REAL, pmjjby REAL, pmsby REAL, apy REAL, slab TEXT,
+    target_pmjdy REAL, target_pmjjby REAL, target_pmsby REAL, target_apy REAL, target_slab TEXT,
+    txn_count REAL, commission REAL, import_id INTEGER, updated_at REAL,
+    PRIMARY KEY (csp_id, month)
+);
+CREATE TABLE IF NOT EXISTS slabs (            -- the monthly DFS slab table (sheet "Slab")
+    slab TEXT PRIMARY KEY, rank INTEGER, pmjdy INTEGER, pmjjby INTEGER, pmsby INTEGER, apy INTEGER,
+    incentive_rs REAL, avg_balance_comm REAL, import_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS calls (
     id INTEGER PRIMARY KEY,
@@ -51,10 +71,20 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT, password_hash TEXT,
     rm_id INTEGER REFERENCES rms(id),   -- set when the user is one of the RMs
     role TEXT,                          -- admin | ops | rm | pending
-    created_at REAL, last_login_at REAL
+    created_at REAL, last_login_at REAL,
+    email_verified_at REAL, password_changed_at REAL
 );
 CREATE TABLE IF NOT EXISTS sessions (
-    token_hash TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), created_at REAL, expires_at REAL
+    token_hash TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), created_at REAL, expires_at REAL,
+    last_seen_at REAL, ip TEXT, user_agent TEXT
+);
+CREATE TABLE IF NOT EXISTS auth_tokens (      -- one-time links sent by email: password reset, email verification
+    id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id),
+    purpose TEXT,              -- reset | verify
+    token_hash TEXT UNIQUE, email TEXT, created_at REAL, expires_at REAL, used_at REAL
+);
+CREATE TABLE IF NOT EXISTS auth_events (      -- sign-ins, failures, resets, role changes (also drives the lockout)
+    id INTEGER PRIMARY KEY, ts REAL, user_id INTEGER, email TEXT, event TEXT, ip TEXT, detail TEXT
 );
 CREATE TABLE IF NOT EXISTS upload_tokens (   -- one per RM phone running the uploader app (uploader/)
     id INTEGER PRIMARY KEY, token_hash TEXT UNIQUE, rm_id INTEGER REFERENCES rms(id), label TEXT,
@@ -83,6 +113,7 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (   -- outbox: one row per event p
     attempts INTEGER DEFAULT 0, next_attempt_at REAL, last_status_code INTEGER, last_error TEXT,
     created_at REAL, delivered_at REAL
 );
+CREATE INDEX IF NOT EXISTS idx_auth_events_email ON auth_events(email, event, ts);
 CREATE INDEX IF NOT EXISTS idx_deliveries_due ON webhook_deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status, uploaded_at);
 CREATE INDEX IF NOT EXISTS idx_calls_started ON calls(started_at);
@@ -112,6 +143,17 @@ def conn() -> sqlite3.Connection:
         if "model" not in {r[1] for r in _conn.execute("PRAGMA table_info(turns)")}:
             _conn.execute("ALTER TABLE turns ADD COLUMN model TEXT")   # which LLM answered this turn
             _conn.commit()
+        if "report_md" not in {r[1] for r in _conn.execute("PRAGMA table_info(recordings)")}:
+            for col in ("report_md TEXT", "report_error TEXT", "report_at REAL", "report_s REAL", "report_model TEXT"):
+                _conn.execute(f"ALTER TABLE recordings ADD COLUMN {col}")    # the full summary (app/report.py)
+            _conn.commit()
+        if "timing_json" not in {r[1] for r in _conn.execute("PRAGMA table_info(recordings)")}:
+            _conn.execute("ALTER TABLE recordings ADD COLUMN timing_json TEXT")   # how long each step took
+            _conn.commit()
+        if "stt_json" not in {r[1] for r in _conn.execute("PRAGMA table_info(recordings)")}:
+            # Whisper's words and the voice turns, kept so "Process again" doesn't redo the slow, paid parts
+            _conn.execute("ALTER TABLE recordings ADD COLUMN stt_json TEXT")
+            _conn.commit()
         if "next_try_at" not in {r[1] for r in _conn.execute("PRAGMA table_info(recordings)")}:
             _conn.execute("ALTER TABLE recordings ADD COLUMN next_try_at REAL")   # when a failed one is retried
             _conn.commit()
@@ -126,7 +168,24 @@ def conn() -> sqlite3.Connection:
             _conn.execute("""UPDATE users SET role = CASE WHEN id = (SELECT MIN(id) FROM users) THEN 'admin'
                              WHEN rm_id IS NOT NULL THEN 'rm' ELSE 'ops' END""")
             _conn.commit()
+        _add_columns(_conn, "rms", {"email": "TEXT", "source": "TEXT"}, demo_source=True)
+        _add_columns(_conn, "csps", {"shared_phone": "TEXT", "alt_phone": "TEXT", "email": "TEXT", "category": "TEXT",
+                                     "state": "TEXT", "lho": "TEXT", "population": "TEXT", "terminal_status": "TEXT",
+                                     "active": "INTEGER DEFAULT 1", "source": "TEXT", "import_id": "INTEGER",
+                                     "updated_at": "REAL"}, demo_source=True)
+        _add_columns(_conn, "users", {"email_verified_at": "REAL", "password_changed_at": "REAL"})
+        _add_columns(_conn, "sessions", {"last_seen_at": "REAL", "ip": "TEXT", "user_agent": "TEXT"})
     return _conn
+
+
+def _add_columns(c: sqlite3.Connection, table: str, cols: dict, demo_source: bool = False):
+    have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+    for name, kind in cols.items():
+        if name not in have:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+            if name == "source" and demo_source:
+                c.execute(f"UPDATE {table} SET source='demo'")   # everything before the import was demo data
+    c.commit()
 
 
 def reset_connection(path: str | None = None):

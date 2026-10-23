@@ -30,8 +30,10 @@
     <h2>Your account is waiting for approval</h2>
     <p class="muted" id="who"></p>
     <p class="muted">An admin needs to approve your account and give it a role before you can use the console. This page checks automatically.</p>
+    <p class="small" id="verify"></p>
     <div class="row">
       <button class="secondary" onclick="location.reload()">Check again</button>
+      <button class="secondary" onclick="location.href='account'">Account</button>
       <button class="secondary" onclick="signOut()">Sign out</button>
     </div>
   </div>
@@ -42,6 +44,8 @@ loadMe().then(u => {
   document.getElementById("who").innerHTML = `Signed in as <b>${esc(u.name)}</b> (${esc(u.email)})`
     + (u.rm_name ? `, asking to be RM <b>${esc(u.rm_name)}</b>.` : ".");
   if (u.role !== "pending") location.href = "./";
+  document.getElementById("verify").innerHTML = u.email_verified ? "Your email is confirmed."
+    : `Your email isn't confirmed yet: open the link we emailed you, or send it again from <a href="account">your account</a>.`;
 });
 // Poll so the page moves on by itself once an admin approves the account
 setInterval(async () => {

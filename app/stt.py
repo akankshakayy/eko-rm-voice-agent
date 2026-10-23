@@ -57,12 +57,24 @@ def transcribe(audio: bytes, filename: str, lang: str = "hi-IN") -> str:
 
 def transcribe_segments(audio: bytes, filename: str, lang: str = "hi", model: str | None = None) -> list[dict]:
     """A whole call, as timed segments: [{"start": 0.0, "end": 4.2, "text": "..."}]. Whisper doesn't say who spoke."""
+    return transcribe_detailed(audio, filename, lang, model)[0]
+
+
+def transcribe_detailed(audio: bytes, filename: str, lang: str = "hi", model: str | None = None,
+                        words: bool = False, prompt: str | None = PROMPT) -> tuple[list[dict], list[dict]]:
+    """A whole call as timed segments, plus (words=True) every word with its own time, for matching to voices.
+    prompt=None sends no hint: on long recordings Whisper sometimes copies a hint sentence into the transcript."""
     audio, filename = to_supported(audio, filename)
     extra = {} if lang == "auto" else {"language": lang.split("-")[0]}
+    if prompt:
+        extra["prompt"] = prompt
     r = _groq().with_options(timeout=300).audio.transcriptions.create(
-        model=model or MODEL, file=(filename, audio), temperature=0, prompt=PROMPT, response_format="verbose_json",
-        timestamp_granularities=["segment"], **extra)
-    segs = getattr(r, "segments", None) or []
+        model=model or MODEL, file=(filename, audio), temperature=0, response_format="verbose_json",
+        timestamp_granularities=["word", "segment"] if words else ["segment"], **extra)
     get = lambda s, k: s.get(k) if isinstance(s, dict) else getattr(s, k, None)  # noqa: E731
-    return [{"start": round(float(get(s, "start") or 0), 2), "end": round(float(get(s, "end") or 0), 2),
-             "text": (get(s, "text") or "").strip()} for s in segs if (get(s, "text") or "").strip()]
+    segs = [{"start": round(float(get(s, "start") or 0), 2), "end": round(float(get(s, "end") or 0), 2),
+             "text": (get(s, "text") or "").strip()} for s in (getattr(r, "segments", None) or [])
+            if (get(s, "text") or "").strip()]
+    ws = [{"start": round(float(get(w, "start") or 0), 2), "end": round(float(get(w, "end") or 0), 2),
+           "word": (get(w, "word") or "").strip()} for w in (getattr(r, "words", None) or []) if (get(w, "word") or "").strip()]
+    return segs, ws
