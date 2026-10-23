@@ -102,17 +102,41 @@ def _say(call_id, ts, text, reply, stt_confidence=None):
     return {"call_id": call_id, "reply": reply, "ended": False, "call": public_call(call_id)}
 
 
+# ---------------------------------------------------------------- real CSPs stay out of testing
+class RealCspBlocked(Exception):
+    """A call would involve a real CSP (from Eko's sheets) while real calls are switched off."""
+
+
+def real_calls_on() -> bool:
+    # Off until Sahayak is deployed on a phone line: until then every call is a test with made-up CSPs
+    return os.environ.get("REAL_CSP_CALLS", "0") == "1"
+
+
+def _check_testable(csp: dict | None):
+    if csp and csp.get("source") == "kb" and not real_calls_on():
+        raise RealCspBlocked("Real CSPs can't be called while Sahayak is being tested. Pick a test CSP instead.")
+
+
 # ---------------------------------------------------------------- public API
-def start_call(direction="inbound", phone=None, purpose="support", ts=None, lang="hi"):
-    """lang: 'hi' or 'en', or 'ask' to let the caller choose at the start of the call."""
+def start_call(direction="inbound", phone=None, purpose="support", ts=None, lang="hi", csp_id=None):
+    """lang: 'hi' or 'en', or 'ask' to let the caller choose at the start of the call.
+    csp_id picks the caller directly (the console's CSP list); otherwise the caller is found by phone number."""
     ts = ts or db.now()
-    csp = csp_by_phone(phone) if phone else None
+    if csp_id:
+        csp = db.q("SELECT * FROM csps WHERE id=?", (csp_id,), one=True)
+        if not csp:
+            raise ValueError("No such CSP")
+        phone = phone or csp["phone"]
+    else:
+        csp = csp_by_phone(phone) if phone else None
+    _check_testable(csp)
     rm = db.q("SELECT * FROM rms WHERE id=?", (csp["rm_id"],), one=True) if csp else None
     lang = lang if lang in ("hi", "en", "ask") else "hi"
+    simulated = 1 if csp and csp.get("source") == "synthetic" else 0   # test CSPs: no webhook events
     call_id = db.x("""INSERT INTO calls(direction,purpose,csp_id,rm_id,caller_phone,status,started_at,engine,slots_json,lang,
-                      touched_at) VALUES(?,?,?,?,?,'ongoing',?,?,'{}',?,?)""",
+                      touched_at,simulated) VALUES(?,?,?,?,?,'ongoing',?,?,'{}',?,?,?)""",
                    (direction, purpose, csp["id"] if csp else None, rm["id"] if rm else None, phone, ts, engine_mode(),
-                    lang, time.time()))
+                    lang, time.time(), simulated))
     call = _call(call_id)
     reply = i18n.t("choose_lang", "hi") if lang == "ask" else _greeting(call, csp, rm, lang)
     _log_turn(call_id, "agent", reply, ts, engine="system")
@@ -147,10 +171,12 @@ def handle_turn(call_id, text, stt_confidence=None, ts=None):
 
     # 1. Identify an unknown caller by CSP code
     if not call["csp_id"]:
-        m = re.search(r"c\s*s\s*p\s*([\d\s]{5,8})", text.lower())
+        m = re.search(r"(c\s*s\s*p|t\s*s\s*t)\s*([\d\s]{5,8})", text.lower())
         if m:
-            code = "CSP" + re.sub(r"\s", "", m.group(1))
+            code = re.sub(r"\s", "", m.group(1)).upper() + re.sub(r"\s", "", m.group(2))
             csp = db.q("SELECT * FROM csps WHERE csp_code=?", (code,), one=True)
+            if csp and csp.get("source") == "kb" and not real_calls_on():
+                csp = None                      # a test call never picks up a real CSP's record
             if csp:
                 db.update("calls", call_id, csp_id=csp["id"], rm_id=csp["rm_id"])
                 return _say(call_id, ts, text, i18n.t("identified", lang, name=csp["name"].split()[0]), stt_confidence)

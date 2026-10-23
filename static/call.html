@@ -21,6 +21,18 @@
     background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--panel)), color-mix(in srgb, var(--accent-2) 8%, var(--panel)));
     border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); }
   .setup { --tone: var(--c1); }
+  .setup input[type=search] { width: 100%; }
+  .picker { margin-top: 8px; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel); }
+  .picker h4 { position: sticky; top: 0; margin: 0; padding: 7px 10px; font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 6px; }
+  .picker button.csp { display: block; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--border);
+    border-radius: 0; background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+  .picker button.csp:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+  .picker button.csp.sel { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); box-shadow: inset 3px 0 0 var(--accent); }
+  .picker button.csp:disabled { cursor: default; opacity: .75; }
+  .picker button.csp small { display: block; color: var(--muted); font-size: 11.5px; }
+  .picker .none { padding: 8px 10px; font-size: 12.5px; color: var(--muted); }
+  .picked { margin-top: 8px; font-size: 12.5px; }
 
   /* conversation column */
   .stage { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
@@ -101,8 +113,12 @@
       <h2>Call setup</h2>
       <label>Direction</label>
       <select id="direction"><option value="inbound">Inbound (CSP calls agent)</option><option value="outbound">Outbound (agent calls CSP)</option></select>
-      <label>Caller / CSP (simulated caller ID)</label>
-      <select id="csp"></select>
+      <label for="rmPick">RM</label>
+      <select id="rmPick"></select>
+      <label for="cspSearch">Caller / CSP: search by code or name</label>
+      <input type="search" id="cspSearch" placeholder="e.g. TST04 or Sunita" autocomplete="off">
+      <div class="picker" id="picker" role="listbox" aria-label="CSPs"><div class="none">Loading…</div></div>
+      <div class="picked" id="picked"></div>
       <label>Purpose</label>
       <select id="purpose"><option value="support">Support</option><option value="follow_up">Ticket follow-up</option><option value="activation">Activation check-in</option></select>
       <label>Caller's language</label>
@@ -175,10 +191,49 @@ const $ = id => document.getElementById(id);
   cfg = await loadConfig();
   $("engineInfo").innerHTML = `Brain: <b>${cfg.engine !== "rules" ? esc(cfg.engine_label) + " (" + esc(cfg.model) + ")" : "Rules fallback (no API key)"}</b>`
     + `<br>Mic: <b>${cfg.stt ? "Groq Whisper (any browser)" : "browser speech recognition (Chrome / Edge)"}</b>`;
-  const csps = await api("api/csps");
-  $("csp").innerHTML = csps.map(c => `<option value="${c.phone}">${esc(c.name)} · ${c.csp_code} · ${esc(c.district)} (RM ${esc(c.rm_name.split(" ")[0])})</option>`).join("")
-    + `<option value="9999999999">Unknown number (agent asks for CSP ID)</option>`;
+  const rms = await api("api/rms");
+  $("rmPick").innerHTML = `<option value="">All RMs</option>` + rms.map(r => `<option value="${r.id}">${esc(r.name)}${r.region ? " · " + esc(r.region) : ""}</option>`).join("");
+  if (rms.length === 1) $("rmPick").value = rms[0].id;
+  loadCsps();
 })();
+
+// ---------------------------------------------------------------- caller picker
+// Each RM's own CSPs. Test CSPs (made up, codes TST…) can be called; real CSPs from Eko's sheets are listed for
+// reference only: the server refuses calls to them while Sahayak is being tested.
+let PICK = { id: null, unknown: false, label: "" };
+let searchTimer;
+const cspRow = (c, real) => `<button type="button" class="csp ${PICK.id === c.id ? "sel" : ""}" data-id="${c.id}" ${real ? "disabled" : ""}
+  title="${real ? "Real CSP: view only while calls to real CSPs are off" : "Call this test CSP"}">
+  <b>${esc(c.name)}</b> <span class="muted">${esc(c.csp_code)}</span>${c.active ? "" : ' <span class="badge">inactive</span>'}
+  <small>${[c.category, c.district, c.slab && c.slab !== "No Slab" ? c.slab : null, $("rmPick").value ? null : "RM " + (c.rm_name || "–")].filter(Boolean).map(esc).join(" · ")}</small></button>`;
+
+async function loadCsps() {
+  const q = $("cspSearch").value.trim();
+  const d = await api(`api/console/csps?rm_id=${encodeURIComponent($("rmPick").value)}&q=${encodeURIComponent(q)}`);
+  const more = (shown, total) => total > shown ? `${shown} of ${total}` : `${total}`;
+  $("picker").innerHTML = `<h4><span>Test CSPs · can call</span><span>${more(d.test.length, d.test_total)}</span></h4>`
+    + (d.test.map(c => cspRow(c, false)).join("") || `<div class="none">${q ? "No test CSP matches." : "No test CSPs yet. Make them with <code>python -m app.synthetic</code>."}</div>`)
+    + `<button type="button" class="csp ${PICK.unknown ? "sel" : ""}" data-unknown="1"><b>Unknown number</b><small>Agent asks for the CSP code</small></button>`
+    + `<h4><span>Real CSPs · ${d.real_calls ? "can call" : "view only"}</span><span>${more(d.real.length, d.real_total)}</span></h4>`
+    + (d.real.map(c => cspRow(c, !d.real_calls)).join("") || `<div class="none">${q ? "No real CSP matches." : "None for this RM."}</div>`);
+  window._csps = Object.fromEntries([...d.test, ...d.real].map(c => [c.id, c]));
+}
+$("rmPick").onchange = () => { PICK = { id: null, unknown: false, label: "" }; showPick(); loadCsps(); };
+$("cspSearch").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadCsps, 200); };
+$("picker").onclick = e => {
+  const b = e.target.closest("button.csp");
+  if (!b || b.disabled) return;
+  const c = window._csps[b.dataset.id];
+  PICK = b.dataset.unknown ? { id: null, unknown: true, label: "Unknown number" } : { id: c.id, unknown: false, label: `${c.name} · ${c.csp_code}` };
+  $("picker").querySelectorAll(".sel").forEach(x => x.classList.remove("sel"));
+  b.classList.add("sel");
+  showPick();
+};
+function showPick() {
+  $("picked").innerHTML = PICK.label ? `Calling: <b>${esc(PICK.label)}</b>` : `<span class="muted">Pick a test CSP to call.</span>`;
+  $("startBtn").disabled = !PICK.label || !!callId;
+}
+showPick();
 
 function addBubble(role, text, meta = "") {
   const t = $("transcript");
@@ -258,12 +313,16 @@ function endUi(c) {
   clearInterval(callTimer);
   callId = null; stopListen();
   setCallUi(false);
-  $("startBtn").disabled = false;
+  $("startBtn").disabled = !PICK.label;
 }
 
 $("startBtn").onclick = async () => {
   $("transcript").innerHTML = "";
-  const res = await api("api/calls", { method: "POST", body: { direction: $("direction").value, phone: $("csp").value, purpose: $("purpose").value, lang: $("lang").value } });
+  let res;
+  try {
+    res = await api("api/calls", { method: "POST", body: { direction: $("direction").value, purpose: $("purpose").value, lang: $("lang").value,
+      ...(PICK.unknown ? { phone: "5000000000" } : { csp_id: PICK.id }) } });
+  } catch (e) { toast((e.message.match(/"detail":"([^"]+)"/) || [, "Couldn't start the call"])[1]); return; }
   callId = res.call_id;
   $("callStatus").innerHTML = `<span class="live-dot"></span> Live call #${callId} <span class="badge">${$("direction").value}</span><span class="timer" id="callTimer">0:00</span>`;
   const started = Date.now();

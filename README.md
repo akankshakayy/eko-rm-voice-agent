@@ -78,6 +78,13 @@ a database that still has the made-up data needs `--remove-demo`: it copies the 
 deletes the demo RMs/CSPs and every simulated call and ticket (`--map-rm 1=Shiwani` moves logins and upload tokens
 of a demo RM to a real one instead of unlinking them). The LLM only ever sees a CSP's code and first name.
 
+**Test CSPs and the call console.** Real CSPs are never called while Sahayak is being tested: every call that would
+involve one (by number, by picking it, or by saying its code mid-call) is refused until `REAL_CSP_CALLS=1`.
+`python -m app.synthetic` gives each RM 12 made-up test CSPs (codes `TST…`, mobile numbers starting with 5, which no
+Indian mobile does; names never match a real CSP; this month's scheme counts cover every slab case). In the call
+console, pick an RM to see their own CSPs and search by code or name: test CSPs can be called, real CSPs are listed
+for reference only (without their numbers). Calls to test CSPs are marked as tests and send no webhook events.
+
 **Abandoned calls.** Closing or reloading the call console tab hangs up the call. Any call with no activity for
 10 minutes (`CALL_IDLE_TIMEOUT_MIN`) is closed automatically by a background check that runs every minute, exactly
 like a hang-up: if part of an issue was captured, the RM still gets an escalated ticket.
@@ -180,6 +187,7 @@ app/
   auth.py          accounts, roles, password hashing, sessions, reset/verification links, email linking
   mailer.py        account emails over SMTP (off until configured)
   kb_import.py     imports Eko's calling sheet + slab table; the slab rule
+  synthetic.py     made-up test CSPs for each RM (the only CSPs the console can call while testing)
   metrics.py       dashboard aggregations
   simulator.py     synthetic CSP callers (live or backfill)
   seed.py          made-up RMs and CSPs for tests, scorecard and simulator (data/demo.db)

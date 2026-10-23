@@ -1306,3 +1306,67 @@ def test_a_leaked_whisper_hint_is_dropped_and_long_lines_are_broken():
     many = [{"word": f"शब्द{i}", "start": i * 0.5, "end": i * 0.5 + 0.2} for i in range(200)]   # one voice, no punctuation
     lines = assign_words(many, [{"start": 0, "end": 200, "voice": "A"}])
     assert len(lines) > 1 and all(len(l["text"]) <= 700 for l in lines)
+
+
+# ---------------------------------------------------------------- test CSPs, and no calls to real CSPs while testing
+def _real_csp(code="CSP99999", phone="9123400777", rm_id=1, name="Real Person"):
+    from app import db
+    return db.x("INSERT INTO csps(csp_code,name,phone,rm_id,source) VALUES(?,?,?,?,'kb')", (code, name, phone, rm_id))
+
+
+def test_synthetic_csps_cover_slab_cases_and_never_look_real():
+    from app import db, synthetic
+    _real_csp(name="Sunita Devi")                                        # a real name the generator must avoid
+    r = synthetic.generate(per_rm=8)
+    rows = db.q("SELECT * FROM csps WHERE source='synthetic'")
+    assert r["written"] == 24 and len(rows) == 24                        # 3 demo RMs x 8
+    assert all(c["csp_code"].startswith("TST") and synthetic.is_synthetic_phone(c["phone"]) for c in rows)
+    assert "sunita devi" not in {c["name"].lower() for c in rows}
+    assert len({c["phone"] for c in rows}) == 24
+    slabs = {m["slab"] for m in db.q("SELECT slab FROM csp_monthly m JOIN csps c ON c.id=m.csp_id WHERE c.source='synthetic'")}
+    assert {"No Slab", "Slab-1", "Slab-2", "Super Slab"} <= slabs
+    synthetic.generate(per_rm=8)                                         # again: updated in place
+    assert len(db.q("SELECT 1 FROM csps WHERE source='synthetic'")) == 24
+
+
+def test_real_csps_cannot_be_called_while_testing(monkeypatch):
+    from app import agent, db
+    cid = _real_csp()
+    for kw in ({"phone": "9123400777"}, {"csp_id": cid}):
+        with pytest.raises(agent.RealCspBlocked):
+            agent.start_call("outbound", **kw)
+    assert not db.q("SELECT 1 FROM calls")
+    c = _client()
+    r = c.post("/api/calls", json={"direction": "outbound", "csp_id": cid})
+    assert r.status_code == 403 and "Real CSPs" in r.json()["detail"]
+    # Saying a real CSP's code during a test call doesn't attach it either
+    call = agent.start_call("inbound", "5000000000")
+    r = agent.handle_turn(call["call_id"], "Mera CSP code CSP 99999 hai", .9)
+    assert db.q("SELECT csp_id FROM calls WHERE id=?", (call["call_id"],), one=True)["csp_id"] is None
+    monkeypatch.setenv("REAL_CSP_CALLS", "1")                            # only once deployed for real
+    assert agent.start_call("outbound", csp_id=cid)["call_id"]
+
+
+def test_test_csp_calls_are_marked_as_tests():
+    from app import agent, db, synthetic
+    synthetic.generate(per_rm=2)
+    csp = db.q("SELECT * FROM csps WHERE source='synthetic' LIMIT 1", one=True)
+    r = agent.start_call("inbound", csp_id=csp["id"])
+    call = db.q("SELECT * FROM calls WHERE id=?", (r["call_id"],), one=True)
+    assert call["csp_id"] == csp["id"] and call["rm_id"] == csp["rm_id"] and call["simulated"] == 1
+
+
+def test_console_lists_each_rms_csps_and_searches_by_code_or_name():
+    from app import synthetic
+    synthetic.generate(per_rm=3)
+    _real_csp(code="1A859100", phone="9123400100", rm_id=2, name="Kamla Prasad")
+    c = _client()
+    d = c.get("/api/console/csps?rm_id=2").json()
+    assert d["real_calls"] is False
+    assert {x["rm_id"] for x in d["test"]} == {2} and [x["csp_code"] for x in d["real"]] == ["1A859100"]
+    assert all(x["source"] in ("synthetic", "demo") for x in d["test"])
+    assert "phone" not in d["real"][0]                                   # the console never needs a real number
+    assert sorted(x["csp_code"] for x in c.get("/api/console/csps?q=tst02").json()["test"]) == ["TST02001", "TST02002", "TST02003"]
+    assert c.get("/api/console/csps?q=kamla").json()["real"][0]["name"] == "Kamla Prasad"
+    assert c.get("/api/console/csps?q=%25").json()["test"] == []         # % is searched for literally
+    assert c.get("/api/console/csps?rm_id=1").json()["real"] == []

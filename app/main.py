@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
@@ -405,12 +406,47 @@ def csps(rm_id: int | None = None):
     return db.q("SELECT c.*, r.name rm_name FROM csps c JOIN rms r ON r.id=c.rm_id ORDER BY c.rm_id, c.name")
 
 
+@app.get("/api/console/csps", dependencies=[Depends(allow(*STAFF))])
+def console_csps(rm_id: int | None = None, q: str = "", limit: int = 40):
+    """The call console's CSP picker for one RM (or all): test CSPs, which can be called, and real CSPs from the
+    knowledge base, which are view only while real calls are off. Search matches the CSP code or name."""
+    where, args = ["c.source IN ({})"], []
+    if rm_id:
+        where.append("c.rm_id=?")
+        args.append(rm_id)
+    q = q.strip()[:60]
+    if q:
+        like = "%" + q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where.append("(lower(c.csp_code) LIKE ? ESCAPE '\\' OR lower(c.name) LIKE ? ESCAPE '\\')")
+        args += [like, like]
+    cond = " AND ".join(where)
+    limit = max(1, min(limit, 200))
+    month = time.strftime("%Y-%m")
+
+    def part(sources):
+        marks = ",".join("?" * len(sources))
+        rows = db.q(f"""SELECT c.id, c.csp_code, c.name, c.shop_name, c.district, c.state, c.category, c.active,
+                               c.source, c.rm_id, r.name rm_name, m.slab
+                        FROM csps c LEFT JOIN rms r ON r.id=c.rm_id
+                        LEFT JOIN csp_monthly m ON m.csp_id=c.id AND m.month=?
+                        WHERE {cond.format(marks)} ORDER BY c.active DESC, c.name LIMIT ?""",
+                    (month, *sources, *args, limit))
+        total = db.q(f"SELECT COUNT(*) n FROM csps c WHERE {cond.format(marks)}", (*sources, *args), one=True)["n"]
+        return rows, total
+
+    test, n_test = part(("synthetic", "demo"))
+    real, n_real = part(("kb",))
+    return {"test": test, "test_total": n_test, "real": real, "real_total": n_real,
+            "real_calls": agent.real_calls_on()}
+
+
 # ------------------------------------------------------------------ calls
 class StartCall(BaseModel):
     direction: str = "inbound"
     phone: str | None = None
     purpose: str = "support"
     lang: str = "hi"   # hi | en | ask (agent asks the caller to pick)
+    csp_id: int | None = None   # the caller picked from the console's CSP list
 
 
 class Turn(BaseModel):
@@ -420,7 +456,12 @@ class Turn(BaseModel):
 
 @app.post("/api/calls", dependencies=[Depends(allow(*STAFF))])
 def start_call(body: StartCall):
-    return agent.start_call(body.direction, body.phone, body.purpose, lang=body.lang)
+    try:
+        return agent.start_call(body.direction, body.phone, body.purpose, lang=body.lang, csp_id=body.csp_id)
+    except agent.RealCspBlocked as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 
 @app.post("/api/calls/{call_id}/turn", dependencies=[Depends(allow(*STAFF))])
