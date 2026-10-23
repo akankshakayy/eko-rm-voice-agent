@@ -46,3 +46,25 @@ because Whisper's own text would score itself as perfect. Listen to the clip, fi
 
 Aim for 20 to 30 recordings across issue types, regions and noise levels. The 22 starter rows are written
 phrases to check the pipeline; replace or extend them with real ones.
+
+## Synthetic phone calls
+
+Misheard amounts and IDs are the agent's weakest point, and clean text-to-speech is far easier for Whisper than a
+real call. `evals/synth_audio.py` makes CSP opening complaints that carry the hard parts, and makes them sound like
+phone calls:
+
+```bash
+python -m evals.synth_audio                                   # 48 cases: evals/synthetic_cases.csv + evals/audio/synth/
+python -m evals.run --cases evals/synthetic_cases.csv --audio-only --no-tts
+python -m evals.synth_audio --report evals/results/<run>/results.csv   # scores by line condition and reading style
+```
+
+| | Varies |
+|---|---|
+| Numbers | Hindi words ("बारह हज़ार पाँच सौ"), everyday forms ("डेढ़ हज़ार", "ढाई हज़ार", "साढ़े तीन हज़ार"), English words; IDs digit by digit, in groups of three ("चार सौ बयासी"), with letters spelt out ("टी एक्स एन") |
+| Voices | Hindi and Indian-English, male and female, at different speeds and pitches |
+| Line | clean, phone (300–3400 Hz, 8 kHz, G.711), GSM codec, phone + shop noise at 15 dB and 5 dB, phone + dropouts |
+
+Each case keeps its answer key (text, issue type, amount, IDs). Nothing comes from real CSPs or calls, and the same
+`--seed` always makes the same set. The generated files are git-ignored. Use these cases to find and fix weak spots;
+real recordings stay the measure of how good the agent is.

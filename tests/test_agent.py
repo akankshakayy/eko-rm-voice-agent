@@ -1432,3 +1432,19 @@ def test_personal_token_keeps_its_rm_and_refuses_another_name():
     assert bad.status_code == 400 and "belongs to" in bad.json()["detail"]
     ok = phone.post("/api/uploader/recordings", files={"audio": ("a.m4a", b"x")}, data={"rm_id": "1"}, headers=auth)
     assert ok.status_code == 200
+
+
+def test_synthetic_audio_says_numbers_the_way_people_do():
+    import random
+    from evals.synth_audio import english_words, hindi_everyday, hindi_words, make_case, say_id
+    assert hindi_words(12500) == "बारह हज़ार पाँच सौ" and hindi_words(125000) == "एक लाख पच्चीस हज़ार"
+    assert [hindi_everyday(n) for n in (1500, 2500, 3500, 350)] == ["डेढ़ हज़ार", "ढाई हज़ार", "साढ़े तीन हज़ार", "साढ़े तीन सौ"]
+    assert english_words(49500) == "forty nine thousand five hundred"
+    assert say_id("TXN482913577", "hi", "groups") == "टी एक्स एन चार सौ बयासी, नौ सौ तेरह, पाँच सौ सतहत्तर"
+    assert say_id("0482", "hi", "digits") == "ज़ीरो चार आठ दो"
+    a, b = make_case(3, random.Random(7)), make_case(3, random.Random(7))
+    assert a == b                                                   # same seed, same case
+    assert a["expected_intent"] and a["reference_text"] and "condition=" in a["notes"]
+    for slot in ("amount", "txn_id", "utr_or_ref"):                 # what the caller says is what the answer key holds
+        if a[slot]:
+            assert a[slot] in a["reference_text"]

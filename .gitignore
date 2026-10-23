@@ -21,3 +21,4 @@ docs/*.xlsx
 *.db
 *.db-*
 *.sqlite*
+evals/synthetic_cases.csv
