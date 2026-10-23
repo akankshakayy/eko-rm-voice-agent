@@ -1448,3 +1448,29 @@ def test_synthetic_audio_says_numbers_the_way_people_do():
     for slot in ("amount", "txn_id", "utr_or_ref"):                 # what the caller says is what the answer key holds
         if a[slot]:
             assert a[slot] in a["reference_text"]
+
+
+def test_spoken_numbers_become_digits_and_ordinary_words_stay():
+    from app.spoken import normalize
+    assert normalize("बारह हज़ार पाँच सौ रुपये कट गए") == "12500 रुपये कट गए"
+    assert normalize("बिल भरा था साड़े 12,000 रुपए का") == "बिल भरा था 12500 रुपए का"     # Whisper's own misspelling
+    assert normalize("wallet में धाई हजार रुपे डाले") == "wallet में 2500 रुपे डाले"
+    assert normalize("एक लाख पच्चीस हज़ार निकाले") == "125000 निकाले"
+    assert [normalize(x) for x in ("डेढ़ सौ", "सवा दो हज़ार", "पौने दो हज़ार", "paanch hazaar")] == ["150", "2250", "1750", "5000"]
+    assert normalize("ID चार आठ दो नौ एक तीन है") == "ID 482913 है"                    # an ID read digit by digit
+    for same in ("कल एक मनी ट्रांसफर किया", "एक दो दिन में आएगा", "मैं सो गया था", "हज़ारों लोग", "TXN482913577 वाला"):
+        assert normalize(same) == same
+    assert normalize("केनरा बैंक से आईएमपीएस किया") == "Canara Bank से IMPS किया"
+
+
+def test_bent_bank_and_payment_names_are_mapped():
+    from app.llm_engine import _clean_slots
+    out = _clean_slots({"bank_name": "FBI", "payment_mode": "NAFT", "amount": "500"})
+    assert out == {"bank_name": "SBI", "payment_mode": "NEFT", "amount": "500"}
+    assert _clean_slots({"payment_mode": "EMS"})["payment_mode"] == "IMPS"
+    assert _clean_slots({"bank_name": "Some Cooperative Bank"})["bank_name"] == "Some Cooperative Bank"  # nothing close
+
+
+def test_everyday_amount_reaches_the_ticket():
+    r = talk([("मेरा DMT फेल हो गया, साढ़े बारह हज़ार रुपये कट गए", .9), ("TXN123456789", .9), ("कल", .9), ("हाँ जी", .9)])
+    assert r["ticket"]["category"] == "dmt_failed" and '"amount": "12500"' in r["ticket"]["details_json"]

@@ -8,6 +8,7 @@ import json
 import os
 import time
 
+from . import spoken
 from .taxonomy import CATEGORIES, SLOT_LABELS, INTENT_CONFIDENCE_MIN
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
@@ -158,6 +159,11 @@ def _clean_slots(raw) -> dict:
         if key not in SLOT_LABELS:
             key = next((s for s in SLOT_LABELS if key.lower().startswith(s)), key)
         out[key] = normalize_id(v) if key in ID_SLOTS else str(v).strip()
+    # Speech-to-text bends names ("NAFT", "EMS", "FBI"): map them onto the known payment modes and banks
+    if out.get("payment_mode"):
+        out["payment_mode"] = spoken.canonical_mode(out["payment_mode"])
+    if out.get("bank_name"):
+        out["bank_name"] = spoken.canonical_bank(out["bank_name"])
     return out
 
 

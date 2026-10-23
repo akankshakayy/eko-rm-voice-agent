@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 
-from . import db, i18n, integrations
+from . import db, i18n, integrations, spoken
 from .seed import csp_by_phone
 from .rules_engine import RulesEngine
 from .taxonomy import (CATEGORIES, HUMAN_REQUEST, ANGER, STT_CONFIDENCE_MIN, INTENT_CONFIDENCE_MIN,
@@ -198,15 +198,17 @@ def handle_turn(call_id, text, stt_confidence=None, ts=None):
         return _finish(call, ts, "escalate", reply, {"escalation_reason": reason,
                                                      "sentiment": "angry" if "angry" in reason else "neutral"})
 
-    # 4. Ask the engine
+    # 4. Ask the engine. It reads the caller's words with numbers as digits and banks/modes by name
+    #    ("साढ़े बारह हज़ार" -> 12500, "केनरा बैंक" -> Canara Bank); the call log keeps what was really said.
     state = _state(call)
     eng = _engine()
     error = None
+    heard = spoken.normalize(text)
     try:
-        d = eng.decide(state, text)
+        d = eng.decide(state, heard)
     except Exception as e:  # LLM down / timeout -> rules fallback for this turn
         error = f"{type(e).__name__}: {str(e)[:150]}"
-        d = _rules.decide(state, text)
+        d = _rules.decide(state, heard)
     _log_turn(call_id, "csp", text, ts, stt_confidence=stt_confidence, latency_ms=d.get("latency_ms"),
               input_tokens=d.get("input_tokens"), output_tokens=d.get("output_tokens"), engine=d["engine"],
               intent=d.get("intent"), intent_confidence=d.get("intent_confidence"), error=error, model=d.get("model"))
