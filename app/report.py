@@ -6,12 +6,14 @@ then the notes become one summary. The models are told to keep only what was sai
 and mark anything unclear, so the summary can be checked against the transcript line by line (every point carries
 its [mm:ss] time).
 """
-import html
+import io
 import json
 import os
 import re
 import time
+import zipfile
 from datetime import datetime
+from xml.sax.saxutils import escape as xml_escape
 
 from . import db, llm_engine
 
@@ -242,39 +244,95 @@ def summary_file(rec: dict) -> str:
     return "# Summary\n\n" + "\n".join(f"- {h}" for h in header(rec)) + "\n\n" + (rec.get("report_md") or "") + "\n"
 
 
-def _md_html(md: str) -> str:
-    """The small Markdown subset the summary uses (headings, bullets, bold) -> HTML, everything else escaped."""
-    out, in_list = [], False
+# ---------------------------------------------------------------- Word (.docx)
+# A real .docx (a zip of WordprocessingML), built with the standard library. HTML saved as .doc opened only in
+# desktop Word; LibreOffice, Google Docs and phone apps showed it empty. Hindi uses the complex-script font.
+_FONTS = '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Nirmala UI"/>'
+_STYLES = {"Title": 36, "Heading1": 28, "Heading2": 24, "Heading3": 22}
+
+
+def _run(text: str, bold: bool = False, color: str | None = None) -> str:
+    props = _FONTS + ("<w:b/><w:bCs/>" if bold else "") + (f'<w:color w:val="{color}"/>' if color else "")
+    return f'<w:r><w:rPr>{props}</w:rPr><w:t xml:space="preserve">{xml_escape(text)}</w:t></w:r>'
+
+
+def _runs(text: str) -> str:
+    """**bold** inside a line becomes bold runs; everything else is plain text."""
+    parts = re.split(r"\*\*(.+?)\*\*", text)
+    return "".join(_run(p, bold=i % 2 == 1) for i, p in enumerate(parts) if p)
+
+
+def _para(runs: str, style: str | None = None, bullet: bool = False) -> str:
+    props = (f'<w:pStyle w:val="{style}"/>' if style else "") + \
+        ('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' if bullet else "") + \
+        '<w:spacing w:after="60"/>'
+    return f"<w:p><w:pPr>{props}</w:pPr>{runs}</w:p>"
+
+
+def _md_paras(md: str) -> list[str]:
+    """The small Markdown subset the summary uses: # headings, - bullets, **bold**."""
+    out = []
     for raw in md.splitlines():
-        line = html.escape(raw.strip())
-        line = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", line)
-        if line.startswith(("- ", "* ")):
-            if not in_list:
-                out.append("<ul>")
-                in_list = True
-            out.append(f"<li>{line[2:]}</li>")
+        line = raw.strip()
+        if not line:
             continue
-        if in_list:
-            out.append("</ul>")
-            in_list = False
         if line.startswith("#"):
-            level = min(len(line) - len(line.lstrip("#")), 4)      # ## -> h2, ### -> h3
-            out.append(f"<h{level}>{line.lstrip('#').strip()}</h{level}>")
-        elif line:
-            out.append(f"<p>{line}</p>")
-    if in_list:
-        out.append("</ul>")
-    return "\n".join(out)
+            level = min(len(line) - len(line.lstrip("#")), 3)
+            out.append(_para(_runs(line.lstrip("#").strip()), f"Heading{level}"))
+        elif line.startswith(("- ", "* ")):
+            out.append(_para(_runs(line[2:]), bullet=True))
+        else:
+            out.append(_para(_runs(line)))
+    return out
 
 
-def word_file(rec: dict) -> str:
-    """A Word document (Word opens HTML saved as .doc): summary first, then the full transcript."""
+def docx_file(rec: dict) -> bytes:
+    """Summary first, then the full transcript, as a Word document."""
     csp = bool(rec.get("is_csp_call"))
-    lines = "\n".join(f"<p><span style='color:#666'>[{clock(l['start'])}]</span> <b>{html.escape(speaker(l, csp))}:</b> "
-                      f"{html.escape(l['text'])}</p>" for l in rec.get("transcript") or [])
-    return f"""<html><head><meta charset="utf-8"><title>{html.escape(filename(rec, 'doc'))}</title>
-<style>body {{ font-family: Calibri, Arial, sans-serif; font-size: 11pt; }} h1 {{ font-size: 18pt; }}
-h2, h3 {{ font-size: 13pt; margin-top: 14pt; }} p {{ margin: 3pt 0; }}</style></head><body>
-<h1>Call recording</h1><p>{"<br>".join(html.escape(h) for h in header(rec))}</p>
-<h1>Summary</h1>{_md_html(rec.get("report_md") or "No summary yet.")}
-<h1>Transcript</h1>{lines}</body></html>"""
+    body = [_para(_run("Call recording"), "Title")]
+    body += [_para(_run(h)) for h in header(rec)]
+    body.append(_para(_run("Summary"), "Heading1"))
+    body += _md_paras(rec.get("report_md") or "No summary yet.")
+    body.append(_para(_run("Transcript"), "Heading1"))
+    for l in rec.get("transcript") or []:
+        body.append(_para(_run(f"[{clock(l['start'])}] ", color="666666") + _run(f"{speaker(l, csp)}: ", bold=True)
+                          + _run(l["text"])))
+    W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    document = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W}><w:body>{"".join(body)}'
+                '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" '
+                'w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>')
+    styles = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles {W}><w:docDefaults><w:rPrDefault>'
+              f'<w:rPr>{_FONTS}<w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>'
+              '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>'
+              + "".join(f'<w:style w:type="paragraph" w:styleId="{sid}"><w:name w:val="{sid.replace("Heading", "heading ").lower() if sid != "Title" else "Title"}"/>'
+                        f'<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/>'
+                        f'{"<w:outlineLvl w:val=" + chr(34) + str(int(sid[-1]) - 1) + chr(34) + "/>" if sid != "Title" else ""}</w:pPr>'
+                        f'<w:rPr><w:b/><w:bCs/><w:sz w:val="{sz}"/><w:szCs w:val="{sz}"/></w:rPr></w:style>'
+                        for sid, sz in _STYLES.items()) + "</w:styles>")
+    numbering = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering {W}><w:abstractNum w:abstractNumId="0">'
+                 '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:lvlJc w:val="left"/>'
+                 '<w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>'
+                 '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>')
+    R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    files = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+            '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'
+            '</Types>',
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{R}/officeDocument" Target="word/document.xml"/></Relationships>',
+        "word/_rels/document.xml.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{R}/styles" Target="styles.xml"/>'
+            f'<Relationship Id="rId2" Type="{R}/numbering" Target="numbering.xml"/></Relationships>',
+        "word/document.xml": document, "word/styles.xml": styles, "word/numbering.xml": numbering}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, text in files.items():
+            z.writestr(name, text)
+    return buf.getvalue()

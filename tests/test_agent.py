@@ -1256,9 +1256,18 @@ def test_detailed_summary_reads_the_whole_transcript_and_downloads(monkeypatch):
     assert "[00:00] Speaker" in t.text or "[00:00]" in t.text
     md = admin.get("/api/recordings/1/download/summary.md").text
     assert md.startswith("# Summary") and "They discussed 400 topics." in md
-    doc = admin.get("/api/recordings/1/download/report.doc")
-    assert doc.headers["content-type"].startswith("application/msword") and "<h3>Topics part 1 [00:00–66:39]</h3>" in doc.text
-    assert "<b>Speaker 1</b>" in doc.text
+    doc = admin.get("/api/recordings/1/download/report.docx")
+    assert doc.headers["content-type"].startswith("application/vnd.openxmlformats") and ".docx" in doc.headers["content-disposition"]
+    import io
+    import zipfile
+    from xml.etree import ElementTree
+    z = zipfile.ZipFile(io.BytesIO(doc.content))
+    assert {"[Content_Types].xml", "_rels/.rels", "word/document.xml", "word/styles.xml"} <= set(z.namelist())
+    body = ElementTree.fromstring(z.read("word/document.xml"))          # well-formed XML
+    text = "".join(t.text or "" for t in body.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"))
+    assert "Topics part 1 [00:00–66:39]" in text and "Transcript" in text and "विषय" in text
+    assert admin.get("/api/recordings/1/download/report.doc").content[:2] == b"PK"   # old link, same .docx
+    assert "[1:06:30] Speaker: विषय 399" in text
     assert admin.get("/api/recordings/1/download/secret.py").status_code == 404
 
 

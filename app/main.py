@@ -660,14 +660,15 @@ def upload_recordings(audio: list[UploadFile] = File(...), rm_id: int | None = F
 
 DOWNLOADS = {"transcript.txt": ("transcript_file", "txt", "text/plain; charset=utf-8"),
              "summary.md": ("summary_file", "md", "text/markdown; charset=utf-8"),
-             "report.doc": ("word_file", "doc", "application/msword")}
+             "report.docx": ("docx_file", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+             "report.doc": ("docx_file", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}   # old links get the .docx too
 
 
 @app.get("/api/recordings/{rec_id}/download/{kind}", dependencies=[Depends(allow("admin", "ops", "rm"))])
 def download_recording(rec_id: int, kind: str, request: Request):
-    """The transcript (.txt), the summary (.md) or both as a Word document (.doc), as a file to save."""
+    """The transcript (.txt), the summary (.md) or both as a Word document (.docx), as a file to save."""
     if kind not in DOWNLOADS:
-        raise HTTPException(404, "Choose transcript.txt, summary.md or report.doc")
+        raise HTTPException(404, "Choose transcript.txt, summary.md or report.docx")
     r = _own_recording(request, rec_id)
     fn, ext, media = DOWNLOADS[kind]
     name = report.filename(r, ext)

@@ -197,7 +197,7 @@ async function openRec(id) {
     ${r.status === "new" ? `<div class="note">${r.attempts ? `Last try failed: ${esc(r.error || "")}. Trying again soon.` : "Being transcribed and summarised. This page updates by itself."}</div>` : ""}
     ${r.status === "failed" ? `<div class="note bad">Couldn't process this recording: ${esc(r.error || "unknown error")}</div>` : ""}
     ${r.transcript?.length ? `<div class="downloads">
-      <a href="api/recordings/${r.id}/download/report.doc" download>⬇ Word document (summary + transcript)</a>
+      <a href="api/recordings/${r.id}/download/report.docx" download>⬇ Word document (summary + transcript)</a>
       <a href="api/recordings/${r.id}/download/transcript.txt" download>⬇ Transcript (.txt)</a>
       ${r.report_md ? `<a href="api/recordings/${r.id}/download/summary.md" download>⬇ Summary (.md)</a>` : ""}</div>` : ""}
     ${r.report_md ? `<h3>Detailed summary</h3>
